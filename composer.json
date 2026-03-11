@@ -1,0 +1,30 @@
+{
+    "name": "turnkey/authclient",
+    "description": "OAuth 2.0 authentication client library for token validation, introspection, and acquisition",
+    "type": "library",
+    "license": "proprietary",
+    "require": {
+        "php": "^8.2",
+        "firebase/php-jwt": "^6.10",
+        "symfony/http-client": "^7.0",
+        "symfony/http-kernel": "^7.0",
+        "psr/log": "^3.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0",
+        "predis/predis": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Turnkey\\AuthClient\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Turnkey\\AuthClient\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
