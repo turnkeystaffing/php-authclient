@@ -50,11 +50,14 @@ $jwksProvider = new JwksProvider(
 $validator = new JwksValidator(
     jwksProvider: $jwksProvider,
     issuer: 'https://auth.example.com',
+    audience: 'https://api.example.com',  // required — tokens without this audience are rejected
     logger: $logger,
 );
 
 $claims = $validator->validateToken($bearerToken);
 echo $claims->clientId;
+echo $claims->grantType;   // e.g. "client_credentials"
+echo $claims->authTime;    // unix timestamp of user authentication
 echo $claims->email;       // WARNING: not sanitized
 echo $claims->username;    // WARNING: not sanitized
 ```
@@ -138,6 +141,45 @@ use Turnkey\AuthClient\ScopeChecker;
 
 ScopeChecker::hasScope($claims, 'admin');           // exact match
 ScopeChecker::hasAnyScope($claims, ['read', 'write']); // any match
+```
+
+## Step-up Authentication
+
+Use `authenticatedWithin()` to enforce that the user recently proved their identity — distinct from token expiry. Useful for sensitive operations like account deletion or permission changes.
+
+```php
+// Check if user authenticated within the last 15 minutes (default)
+if (!$claims->authenticatedWithin()) {
+    // Prompt for re-authentication
+}
+
+// Custom window: 5 minutes
+if (!$claims->authenticatedWithin(300)) {
+    // Prompt for re-authentication
+}
+```
+
+Returns `false` if `auth_time` is absent from the token (e.g. client_credentials tokens).
+
+In a controller:
+
+```php
+class AccountController
+{
+    public function deleteAccount(Request $request): Response
+    {
+        $claims = BearerAuthMiddleware::getClaimsFromRequest($request);
+
+        if (!$claims->authenticatedWithin(300)) {
+            return new JsonResponse(
+                ['error' => 'Step-up authentication required. Please re-authenticate.'],
+                Response::HTTP_FORBIDDEN,
+            );
+        }
+
+        // Proceed with account deletion
+    }
+}
 ```
 
 ## Symfony Middleware
@@ -331,6 +373,7 @@ $jwksProvider = new JwksProvider(
 $jwksValidator = new JwksValidator(
     jwksProvider: $jwksProvider,
     issuer: 'https://auth.example.com',
+    audience: 'https://api.example.com',
     logger: $logger,
 );
 
@@ -380,6 +423,7 @@ try {
 
 ## Security Notes
 
+- **Audience validation**: Required and enforced — tokens for other services are rejected
 - **RSA only**: HMAC and `none` algorithms are rejected
 - **Token size limit**: 4096 bytes max (DoS prevention)
 - **No redirects**: HTTP requests disallow redirects to prevent credential leakage

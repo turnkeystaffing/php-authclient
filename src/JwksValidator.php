@@ -13,11 +13,18 @@ class JwksValidator implements TokenValidatorInterface
     private const MAX_TOKEN_LENGTH = 4096;
     private const ALLOWED_ALGORITHMS = ['RS256', 'RS384', 'RS512'];
 
+    /**
+     * @param string $audience Required audience claim. Tokens without a matching audience are rejected.
+     */
     public function __construct(
         private readonly JwksProvider $jwksProvider,
         private readonly string $issuer,
+        private readonly string $audience,
         private readonly LoggerInterface $logger,
     ) {
+        if ($audience === '') {
+            throw new \InvalidArgumentException('authclient: audience is required');
+        }
     }
 
     public function validateToken(string $token): Claims
@@ -75,6 +82,14 @@ class JwksValidator implements TokenValidatorInterface
         if ($tokenIssuer !== $this->issuer) {
             throw AuthClientError::tokenInvalid(
                 sprintf('invalid issuer: expected "%s", got "%s"', $this->issuer, $tokenIssuer)
+            );
+        }
+
+        // Verify audience
+        $tokenAud = isset($payload->aud) ? (array) $payload->aud : [];
+        if (!in_array($this->audience, $tokenAud, true)) {
+            throw AuthClientError::tokenInvalid(
+                sprintf('invalid audience: token does not contain required audience "%s"', $this->audience)
             );
         }
 

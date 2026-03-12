@@ -56,6 +56,8 @@ class RedisCache implements IntrospectionCacheInterface
             'aud' => $response->aud,
             'iss' => $response->iss,
             'scope' => $response->scope,
+            'gty' => $response->grantType,
+            'auth_time' => $response->authTime,
         ], JSON_THROW_ON_ERROR);
 
         $this->redis->set($this->keyNamespace . $key, $data, $ttlSeconds);

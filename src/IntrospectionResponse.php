@@ -18,6 +18,8 @@ class IntrospectionResponse
         public readonly ?string $aud = null,
         public readonly ?string $iss = null,
         public readonly ?string $scope = null,
+        public readonly ?string $grantType = null,
+        public readonly ?int $authTime = null,
     ) {
     }
 
@@ -35,6 +37,8 @@ class IntrospectionResponse
             aud: $data['aud'] ?? null,
             iss: $data['iss'] ?? null,
             scope: $data['scope'] ?? null,
+            grantType: $data['gty'] ?? null,
+            authTime: isset($data['auth_time']) ? (int) $data['auth_time'] : null,
         );
     }
 
@@ -60,6 +64,8 @@ class IntrospectionResponse
             audience: $this->aud !== null ? [$this->aud] : [],
             issuedAt: $this->iat !== null ? new \DateTimeImmutable('@' . $this->iat) : null,
             notBefore: $this->nbf !== null ? new \DateTimeImmutable('@' . $this->nbf) : null,
+            grantType: $this->grantType,
+            authTime: $this->authTime,
         );
     }
 }

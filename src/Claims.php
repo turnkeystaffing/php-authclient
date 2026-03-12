@@ -12,6 +12,9 @@ namespace Turnkey\AuthClient;
  */
 class Claims
 {
+    /** Default max age for step-up authentication checks. */
+    public const DEFAULT_REAUTH_MAX_AGE = 900; // 15 minutes
+
     public function __construct(
         public readonly string $clientId,
         public readonly array $scopes = [],
@@ -23,7 +26,33 @@ class Claims
         public readonly array $audience = [],
         public readonly ?\DateTimeImmutable $issuedAt = null,
         public readonly ?\DateTimeImmutable $notBefore = null,
+        public readonly ?string $grantType = null,
+        public readonly ?int $authTime = null,
     ) {
+    }
+
+    /**
+     * Check if the user authenticated within the given number of seconds.
+     *
+     * Useful for step-up authentication on sensitive operations (e.g. account
+     * deletion, permission changes) where you need proof of recent credential
+     * entry — distinct from token expiry.
+     *
+     * Returns false if auth_time is absent from the token.
+     *
+     * @param int $maxAgeSeconds Maximum allowed age in seconds. 0 uses DEFAULT_REAUTH_MAX_AGE (15 min).
+     */
+    public function authenticatedWithin(int $maxAgeSeconds = 0): bool
+    {
+        if ($this->authTime === null || $this->authTime === 0) {
+            return false;
+        }
+
+        if ($maxAgeSeconds <= 0) {
+            $maxAgeSeconds = self::DEFAULT_REAUTH_MAX_AGE;
+        }
+
+        return (time() - $this->authTime) <= $maxAgeSeconds;
     }
 
     public function deepCopy(): self
@@ -39,6 +68,8 @@ class Claims
             audience: $this->audience,
             issuedAt: $this->issuedAt,
             notBefore: $this->notBefore,
+            grantType: $this->grantType,
+            authTime: $this->authTime,
         );
     }
 
@@ -67,6 +98,8 @@ class Claims
             audience: isset($payload->aud) ? (array) $payload->aud : [],
             issuedAt: isset($payload->iat) ? new \DateTimeImmutable('@' . (int) $payload->iat) : null,
             notBefore: isset($payload->nbf) ? new \DateTimeImmutable('@' . (int) $payload->nbf) : null,
+            grantType: isset($payload->gty) ? (string) $payload->gty : null,
+            authTime: isset($payload->auth_time) ? (int) $payload->auth_time : null,
         );
     }
 }
