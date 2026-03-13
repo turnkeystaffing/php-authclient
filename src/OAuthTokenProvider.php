@@ -6,7 +6,6 @@ namespace Turnkey\AuthClient;
 
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
-use Turnkey\AuthClient\Redis\RedisClientInterface;
 
 class OAuthTokenProvider implements TokenProviderInterface
 {
@@ -28,7 +27,7 @@ class OAuthTokenProvider implements TokenProviderInterface
         private readonly LoggerInterface $logger,
         private readonly array $scopes = [],
         private readonly float $httpTimeoutSeconds = 10.0,
-        private readonly ?RedisClientInterface $redis = null,
+        private readonly ?CacheInterface $cache = null,
         private readonly string $cacheKeyNamespace = 'token_provider:',
     ) {
         if (!str_starts_with($tokenEndpoint, 'https://')) {
@@ -49,9 +48,9 @@ class OAuthTokenProvider implements TokenProviderInterface
             return $this->cachedToken;
         }
 
-        // Check Redis cache (for php-fpm: token persists across requests)
-        if ($this->cachedToken === null && $this->redis !== null) {
-            $this->loadFromRedis($now);
+        // Check persistent cache (for php-fpm: token persists across requests)
+        if ($this->cachedToken === null && $this->cache !== null) {
+            $this->loadFromCache($now);
         }
 
         // Return in-memory cached token if still before refresh threshold
@@ -86,34 +85,29 @@ class OAuthTokenProvider implements TokenProviderInterface
         $this->refreshAt = null;
     }
 
-    private function loadFromRedis(float $now): void
+    private function loadFromCache(float $now): void
     {
-        $data = $this->redis->get($this->cacheKeyNamespace . self::CACHE_KEY);
-        if ($data === null) {
+        $data = $this->cache->get($this->cacheKeyNamespace . self::CACHE_KEY);
+        if (!is_array($data) || !isset($data['token'], $data['expires_at'])) {
             return;
         }
 
-        $decoded = json_decode($data, true);
-        if (!is_array($decoded) || !isset($decoded['token'], $decoded['expires_at'])) {
-            return;
-        }
-
-        $expiresAt = (float) $decoded['expires_at'];
+        $expiresAt = (float) $data['expires_at'];
         if ($now >= $expiresAt) {
-            $this->redis->del($this->cacheKeyNamespace . self::CACHE_KEY);
+            $this->cache->delete($this->cacheKeyNamespace . self::CACHE_KEY);
             return;
         }
 
-        $this->cachedToken = (string) $decoded['token'];
+        $this->cachedToken = (string) $data['token'];
         $this->tokenExpiresAt = $expiresAt;
         // Recalculate refresh threshold from remaining lifetime
-        $originalLifetime = $expiresAt - (float) ($decoded['issued_at'] ?? $now);
+        $originalLifetime = $expiresAt - (float) ($data['issued_at'] ?? $now);
         $this->refreshAt = $expiresAt - ($originalLifetime * (1 - self::REFRESH_THRESHOLD));
     }
 
-    private function saveToRedis(string $token, float $issuedAt, float $expiresAt): void
+    private function saveToCache(string $token, float $issuedAt, float $expiresAt): void
     {
-        if ($this->redis === null) {
+        if ($this->cache === null) {
             return;
         }
 
@@ -122,13 +116,11 @@ class OAuthTokenProvider implements TokenProviderInterface
             return;
         }
 
-        $data = json_encode([
+        $this->cache->set($this->cacheKeyNamespace . self::CACHE_KEY, [
             'token' => $token,
             'issued_at' => $issuedAt,
             'expires_at' => $expiresAt,
-        ], JSON_THROW_ON_ERROR);
-
-        $this->redis->set($this->cacheKeyNamespace . self::CACHE_KEY, $data, $ttl);
+        ], $ttl);
     }
 
     private function fetchToken(): void
@@ -198,6 +190,6 @@ class OAuthTokenProvider implements TokenProviderInterface
         $this->tokenExpiresAt = $now + $expiresIn;
         $this->refreshAt = $now + ($expiresIn * self::REFRESH_THRESHOLD);
 
-        $this->saveToRedis($accessToken, $now, $this->tokenExpiresAt);
+        $this->saveToCache($accessToken, $now, $this->tokenExpiresAt);
     }
 }

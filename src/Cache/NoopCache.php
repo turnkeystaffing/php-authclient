@@ -4,17 +4,16 @@ declare(strict_types=1);
 
 namespace Turnkey\AuthClient\Cache;
 
-use Turnkey\AuthClient\IntrospectionCacheInterface;
-use Turnkey\AuthClient\IntrospectionResponse;
+use Turnkey\AuthClient\CacheInterface;
 
-class NoopCache implements IntrospectionCacheInterface
+class NoopCache implements CacheInterface
 {
-    public function get(string $key): ?IntrospectionResponse
+    public function get(string $key): mixed
     {
         return null;
     }
 
-    public function set(string $key, IntrospectionResponse $response, int $ttlSeconds): void
+    public function set(string $key, mixed $value, int $ttlSeconds): void
     {
     }
 

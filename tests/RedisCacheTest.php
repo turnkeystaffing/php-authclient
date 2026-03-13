@@ -6,7 +6,6 @@ namespace Turnkey\AuthClient\Tests;
 
 use PHPUnit\Framework\TestCase;
 use Turnkey\AuthClient\Cache\RedisCache;
-use Turnkey\AuthClient\IntrospectionResponse;
 use Turnkey\AuthClient\Redis\PrefixedClient;
 
 class RedisCacheTest extends TestCase
@@ -18,28 +17,28 @@ class RedisCacheTest extends TestCase
     {
         $this->mock = new MockRedisClient();
         $redis = new PrefixedClient($this->mock, prefix: 'test:');
-        $this->cache = new RedisCache($redis);
+        $this->cache = new RedisCache($redis, keyNamespace: 'introspection:');
     }
 
     public function testGetSetRoundTrip(): void
     {
-        $response = new IntrospectionResponse(
-            active: true,
-            clientId: 'c1',
-            scope: 'read write',
-            grantType: 'client_credentials',
-            authTime: 1700000000,
-        );
+        $value = [
+            'active' => true,
+            'client_id' => 'c1',
+            'scope' => 'read write',
+            'gty' => 'client_credentials',
+            'auth_time' => 1700000000,
+        ];
 
-        $this->cache->set('token-hash', $response, 300);
+        $this->cache->set('token-hash', $value, 300);
         $result = $this->cache->get('token-hash');
 
-        $this->assertNotNull($result);
-        $this->assertTrue($result->active);
-        $this->assertSame('c1', $result->clientId);
-        $this->assertSame('read write', $result->scope);
-        $this->assertSame('client_credentials', $result->grantType);
-        $this->assertSame(1700000000, $result->authTime);
+        $this->assertIsArray($result);
+        $this->assertTrue($result['active']);
+        $this->assertSame('c1', $result['client_id']);
+        $this->assertSame('read write', $result['scope']);
+        $this->assertSame('client_credentials', $result['gty']);
+        $this->assertSame(1700000000, $result['auth_time']);
     }
 
     public function testGetMissReturnsNull(): void
@@ -49,9 +48,7 @@ class RedisCacheTest extends TestCase
 
     public function testDelete(): void
     {
-        $response = new IntrospectionResponse(active: true, clientId: 'c1');
-
-        $this->cache->set('key', $response, 60);
+        $this->cache->set('key', ['data' => true], 60);
         $this->assertNotNull($this->cache->get('key'));
 
         $this->cache->delete('key');
@@ -64,8 +61,7 @@ class RedisCacheTest extends TestCase
         $redis = new PrefixedClient($mock, prefix: 'app:');
         $cache = new RedisCache($redis, keyNamespace: 'custom:');
 
-        $response = new IntrospectionResponse(active: true, clientId: 'c1');
-        $cache->set('abc', $response, 60);
+        $cache->set('abc', ['x' => 1], 60);
 
         // Key should be: prefix "app:" + namespace "custom:" + key "abc"
         $this->assertArrayHasKey('app:custom:abc', $mock->data);
@@ -73,10 +69,13 @@ class RedisCacheTest extends TestCase
 
     public function testDefaultKeyNamespace(): void
     {
-        $response = new IntrospectionResponse(active: true, clientId: 'c1');
-        $this->cache->set('xyz', $response, 60);
+        $mock = new MockRedisClient();
+        $redis = new PrefixedClient($mock, prefix: 'test:');
+        $cache = new RedisCache($redis);
 
-        // Key should be: prefix "test:" + default namespace "introspection:" + key "xyz"
-        $this->assertArrayHasKey('test:introspection:xyz', $this->mock->data);
+        $cache->set('xyz', ['x' => 1], 60);
+
+        // No namespace, key should be: prefix "test:" + key "xyz"
+        $this->assertArrayHasKey('test:xyz', $mock->data);
     }
 }

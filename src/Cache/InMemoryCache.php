@@ -4,12 +4,11 @@ declare(strict_types=1);
 
 namespace Turnkey\AuthClient\Cache;
 
-use Turnkey\AuthClient\IntrospectionCacheInterface;
-use Turnkey\AuthClient\IntrospectionResponse;
+use Turnkey\AuthClient\CacheInterface;
 
-class InMemoryCache implements IntrospectionCacheInterface
+class InMemoryCache implements CacheInterface
 {
-    /** @var array<string, array{response: IntrospectionResponse, expiresAt: float}> */
+    /** @var array<string, array{value: mixed, expiresAt: float}> */
     private array $entries = [];
 
     public function __construct(
@@ -17,7 +16,7 @@ class InMemoryCache implements IntrospectionCacheInterface
     ) {
     }
 
-    public function get(string $key): ?IntrospectionResponse
+    public function get(string $key): mixed
     {
         if (!isset($this->entries[$key])) {
             return null;
@@ -29,10 +28,10 @@ class InMemoryCache implements IntrospectionCacheInterface
             return null;
         }
 
-        return $entry['response'];
+        return $entry['value'];
     }
 
-    public function set(string $key, IntrospectionResponse $response, int $ttlSeconds): void
+    public function set(string $key, mixed $value, int $ttlSeconds): void
     {
         $this->evictExpired();
 
@@ -41,7 +40,7 @@ class InMemoryCache implements IntrospectionCacheInterface
         }
 
         $this->entries[$key] = [
-            'response' => $response,
+            'value' => $value,
             'expiresAt' => microtime(true) + $ttlSeconds,
         ];
     }

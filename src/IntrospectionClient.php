@@ -17,7 +17,7 @@ class IntrospectionClient implements TokenValidatorInterface, IntrospectorInterf
         private readonly string $clientSecret,
         private readonly HttpClientInterface $httpClient,
         private readonly LoggerInterface $logger,
-        private readonly ?IntrospectionCacheInterface $cache = null,
+        private readonly ?CacheInterface $cache = null,
         private readonly int $cacheTtlSeconds = 300,
         private readonly ?TokenValidatorInterface $fallbackValidator = null,
         private readonly float $httpTimeoutSeconds = 10.0,
@@ -41,7 +41,7 @@ class IntrospectionClient implements TokenValidatorInterface, IntrospectorInterf
 
         // Check cache
         if ($this->cache !== null) {
-            $cached = $this->cache->get($cacheKey);
+            $cached = $this->fromCacheValue($this->cache->get($cacheKey));
             if ($cached !== null) {
                 if (!$cached->active) {
                     $this->cache->delete($cacheKey);
@@ -64,9 +64,9 @@ class IntrospectionClient implements TokenValidatorInterface, IntrospectorInterf
                 return new IntrospectionResponse(
                     active: true,
                     clientId: $claims->clientId,
-                    scope: implode(' ', $claims->scopes),
                     exp: $claims->expiresAt?->getTimestamp(),
                     sub: $claims->subject,
+                    scope: implode(' ', $claims->scopes),
                 );
             }
             throw $e;
@@ -85,6 +85,19 @@ class IntrospectionClient implements TokenValidatorInterface, IntrospectorInterf
         }
 
         return $response;
+    }
+
+    private function fromCacheValue(mixed $value): ?IntrospectionResponse
+    {
+        if ($value instanceof IntrospectionResponse) {
+            return $value;
+        }
+
+        if (is_array($value)) {
+            return IntrospectionResponse::fromArray($value);
+        }
+
+        return null;
     }
 
     private function doIntrospect(string $token): IntrospectionResponse

@@ -4,62 +4,40 @@ declare(strict_types=1);
 
 namespace Turnkey\AuthClient\Cache;
 
-use Turnkey\AuthClient\IntrospectionCacheInterface;
-use Turnkey\AuthClient\IntrospectionResponse;
+use Turnkey\AuthClient\CacheInterface;
 use Turnkey\AuthClient\Redis\RedisClientInterface;
 
 /**
- * Redis-backed introspection cache using RedisClientInterface.
+ * Redis-backed cache using RedisClientInterface.
  *
- * Key prefixing is handled by the underlying PrefixedClient,
- * matching the go-redis pattern where the cache only manages
- * its own key namespace ("introspection:") and the client adds
- * the application prefix (e.g. "myapp:introspection:<sha256>").
+ * Handles JSON serialization internally. Key prefixing is handled
+ * by the underlying PrefixedClient; this class only adds its own
+ * configurable namespace (e.g. "myapp:" + "introspection:" + key).
  */
-class RedisCache implements IntrospectionCacheInterface
+class RedisCache implements CacheInterface
 {
     private readonly string $keyNamespace;
 
     public function __construct(
         private readonly RedisClientInterface $redis,
-        string $keyNamespace = 'introspection:',
+        string $keyNamespace = '',
     ) {
         $this->keyNamespace = $keyNamespace;
     }
 
-    public function get(string $key): ?IntrospectionResponse
+    public function get(string $key): mixed
     {
         $data = $this->redis->get($this->keyNamespace . $key);
         if ($data === null) {
             return null;
         }
 
-        $decoded = json_decode($data, true);
-        if (!is_array($decoded)) {
-            return null;
-        }
-
-        return IntrospectionResponse::fromArray($decoded);
+        return json_decode($data, true);
     }
 
-    public function set(string $key, IntrospectionResponse $response, int $ttlSeconds): void
+    public function set(string $key, mixed $value, int $ttlSeconds): void
     {
-        $data = json_encode([
-            'active' => $response->active,
-            'client_id' => $response->clientId,
-            'username' => $response->username,
-            'token_type' => $response->tokenType,
-            'exp' => $response->exp,
-            'iat' => $response->iat,
-            'nbf' => $response->nbf,
-            'sub' => $response->sub,
-            'aud' => $response->aud,
-            'iss' => $response->iss,
-            'scope' => $response->scope,
-            'gty' => $response->grantType,
-            'auth_time' => $response->authTime,
-        ], JSON_THROW_ON_ERROR);
-
+        $data = json_encode($value, JSON_THROW_ON_ERROR);
         $this->redis->set($this->keyNamespace . $key, $data, $ttlSeconds);
     }
 

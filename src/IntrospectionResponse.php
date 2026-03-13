@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Turnkey\AuthClient;
 
-class IntrospectionResponse
+class IntrospectionResponse implements \JsonSerializable
 {
     public function __construct(
         public readonly bool $active,
@@ -40,6 +40,25 @@ class IntrospectionResponse
             grantType: $data['gty'] ?? null,
             authTime: isset($data['auth_time']) ? (int) $data['auth_time'] : null,
         );
+    }
+
+    public function jsonSerialize(): array
+    {
+        return [
+            'active' => $this->active,
+            'client_id' => $this->clientId,
+            'username' => $this->username,
+            'token_type' => $this->tokenType,
+            'exp' => $this->exp,
+            'iat' => $this->iat,
+            'nbf' => $this->nbf,
+            'sub' => $this->sub,
+            'aud' => $this->aud,
+            'iss' => $this->iss,
+            'scope' => $this->scope,
+            'gty' => $this->grantType,
+            'auth_time' => $this->authTime,
+        ];
     }
 
     public function toClaims(): Claims

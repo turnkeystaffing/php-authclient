@@ -27,18 +27,234 @@ composer require predis/predis
 | `BearerAuthMiddleware` | Symfony kernel listener for token validation |
 | `RequireScopeMiddleware` | Symfony kernel listener for scope enforcement |
 | `PrefixedClient` | Redis client wrapper with automatic key prefixing |
+| `CacheInterface` | Generic cache interface shared by introspection and token provider |
 
-## Token Validation with JWKS
+## Symfony Integration (Full Example)
 
-Validates JWTs locally using keys fetched from a JWKS endpoint. Enforces RSA-only algorithms (RS256, RS384, RS512) and a 4096-byte token size limit.
+### 1. Environment Variables
+
+```dotenv
+# .env.local
+AUTH_ISSUER=https://auth.example.com
+AUTH_AUDIENCE=https://api.example.com
+AUTH_JWKS_ENDPOINT=https://auth.example.com/.well-known/jwks.json
+AUTH_INTROSPECTION_ENDPOINT=https://auth.example.com/oauth/introspect
+AUTH_TOKEN_ENDPOINT=https://auth.example.com/oauth/token
+AUTH_CLIENT_ID=my-service
+AUTH_CLIENT_SECRET=secret
+REDIS_URL=tcp://127.0.0.1:6379
+```
+
+### 2. HTTP Client Configuration
+
+Configure a scoped HTTP client for auth endpoints in `config/packages/framework.yaml`:
+
+```yaml
+# config/packages/framework.yaml
+framework:
+    http_client:
+        scoped_clients:
+            authclient.http_client:
+                # Timeout and redirect settings matching library security defaults
+                timeout: 10
+                max_redirects: 0
+                headers:
+                    Accept: 'application/json'
+                # Optional retry on transient failures
+                retry_failed:
+                    max_retries: 2
+                    delay: 500
+                    multiplier: 2
+                    max_delay: 5000
+```
+
+This creates an autowireable service named `authclient.http_client` with:
+- **10 second timeout** — matches the library default
+- **No redirects** — prevents credential leakage (library enforces this per-request too)
+- **Retry with backoff** — 2 retries, 500ms initial delay, doubles each time
+
+### 3. Service Definitions
+
+```yaml
+# config/services.yaml
+parameters:
+    auth.issuer: '%env(AUTH_ISSUER)%'
+    auth.audience: '%env(AUTH_AUDIENCE)%'
+    auth.jwks_endpoint: '%env(AUTH_JWKS_ENDPOINT)%'
+    auth.introspection_endpoint: '%env(AUTH_INTROSPECTION_ENDPOINT)%'
+    auth.token_endpoint: '%env(AUTH_TOKEN_ENDPOINT)%'
+    auth.client_id: '%env(AUTH_CLIENT_ID)%'
+    auth.client_secret: '%env(AUTH_CLIENT_SECRET)%'
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # --- Redis ---
+
+    Predis\Client:
+        arguments: ['%env(REDIS_URL)%']
+
+    Turnkey\AuthClient\Redis\PrefixedClient:
+        arguments:
+            $client: '@Predis\Client'
+            $prefix: 'myapp:'
+
+    # --- Cache (shared by introspection + token provider) ---
+
+    Turnkey\AuthClient\CacheInterface:
+        class: Turnkey\AuthClient\Cache\RedisCache
+        arguments:
+            $redis: '@Turnkey\AuthClient\Redis\PrefixedClient'
+
+    # --- JWKS Validator ---
+
+    Turnkey\AuthClient\JwksProvider:
+        arguments:
+            $jwksEndpoint: '%auth.jwks_endpoint%'
+            $httpClient: '@authclient.http_client'
+
+    Turnkey\AuthClient\JwksValidator:
+        arguments:
+            $jwksProvider: '@Turnkey\AuthClient\JwksProvider'
+            $issuer: '%auth.issuer%'
+            $audience: '%auth.audience%'
+
+    # --- Introspection Client ---
+
+    Turnkey\AuthClient\IntrospectionClient:
+        arguments:
+            $introspectionEndpoint: '%auth.introspection_endpoint%'
+            $clientId: '%auth.client_id%'
+            $clientSecret: '%auth.client_secret%'
+            $httpClient: '@authclient.http_client'
+            $cache: '@Turnkey\AuthClient\CacheInterface'
+            $cacheTtlSeconds: 300
+            $fallbackValidator: '@Turnkey\AuthClient\JwksValidator'
+
+    # --- Token Provider (outbound API calls) ---
+
+    Turnkey\AuthClient\OAuthTokenProvider:
+        arguments:
+            $tokenEndpoint: '%auth.token_endpoint%'
+            $clientId: '%auth.client_id%'
+            $clientSecret: '%auth.client_secret%'
+            $httpClient: '@authclient.http_client'
+            $scopes: ['api.read']
+            $cache: '@Turnkey\AuthClient\CacheInterface'
+            $cacheKeyNamespace: 'token_provider:'
+
+    # --- Bind validator interface to JWKS (or IntrospectionClient) ---
+
+    Turnkey\AuthClient\TokenValidatorInterface: '@Turnkey\AuthClient\JwksValidator'
+
+    # --- Middleware ---
+
+    Turnkey\AuthClient\Middleware\BearerAuthMiddleware:
+        arguments:
+            $validator: '@Turnkey\AuthClient\TokenValidatorInterface'
+        tags:
+            - { name: kernel.event_listener, event: kernel.request, priority: 256 }
+
+    app.require_admin_scope:
+        class: Turnkey\AuthClient\Middleware\RequireScopeMiddleware
+        factory: ['Turnkey\AuthClient\Middleware\RequireScopeMiddleware', 'single']
+        arguments: ['admin']
+        tags:
+            - { name: kernel.event_listener, event: kernel.request, priority: 128 }
+```
+
+### 4. Development Override
+
+```yaml
+# config/services_dev.yaml
+services:
+    # Replace real auth with noop in dev
+    Turnkey\AuthClient\Middleware\BearerAuthMiddleware:
+        class: Turnkey\AuthClient\Middleware\NoopAuthMiddleware
+        arguments:
+            $defaultClaims: !service
+                class: Turnkey\AuthClient\Claims
+                arguments:
+                    $clientId: 'dev-client'
+                    $scopes: ['admin', 'read', 'write']
+                    $userId: 'dev-user'
+                    $email: 'dev@example.com'
+        tags:
+            - { name: kernel.event_listener, event: kernel.request, priority: 256 }
+```
+
+### 5. Using in Controllers
+
+```php
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Turnkey\AuthClient\Middleware\BearerAuthMiddleware;
+use Turnkey\AuthClient\OAuthTokenProvider;
+
+class MyController
+{
+    public function __construct(
+        private readonly OAuthTokenProvider $tokenProvider,
+    ) {
+    }
+
+    // Read claims set by BearerAuthMiddleware
+    public function profile(Request $request): Response
+    {
+        $claims = BearerAuthMiddleware::getClaimsFromRequest($request);
+
+        return new JsonResponse([
+            'client_id' => $claims->clientId,
+            'scopes' => $claims->scopes,
+            'user_id' => $claims->userId,
+        ]);
+    }
+
+    // Use token provider for outbound API calls
+    public function callExternalApi(): Response
+    {
+        $token = $this->tokenProvider->getToken();
+
+        // Use $token in Authorization: Bearer header for outbound requests
+        // ...
+    }
+}
+```
+
+---
+
+## Standalone Usage (Without Symfony DI)
+
+### HTTP Client Configuration
+
+```php
+use Symfony\Component\HttpClient\HttpClient;
+use Symfony\Component\HttpClient\RetryableHttpClient;
+
+// Basic client
+$httpClient = HttpClient::create([
+    'timeout' => 10,
+    'max_redirects' => 0,
+]);
+
+// With retry (optional)
+$httpClient = new RetryableHttpClient(
+    HttpClient::create([
+        'timeout' => 10,
+        'max_redirects' => 0,
+    ]),
+    maxRetries: 2,
+);
+```
+
+### Token Validation with JWKS
 
 ```php
 use Turnkey\AuthClient\JwksProvider;
 use Turnkey\AuthClient\JwksValidator;
-use Symfony\Component\HttpClient\HttpClient;
-
-$httpClient = HttpClient::create();
-$logger = /* your PSR-3 logger */;
 
 $jwksProvider = new JwksProvider(
     jwksEndpoint: 'https://auth.example.com/.well-known/jwks.json',
@@ -50,7 +266,7 @@ $jwksProvider = new JwksProvider(
 $validator = new JwksValidator(
     jwksProvider: $jwksProvider,
     issuer: 'https://auth.example.com',
-    audience: 'https://api.example.com',  // required — tokens without this audience are rejected
+    audience: 'https://api.example.com',  // required
     logger: $logger,
 );
 
@@ -62,9 +278,7 @@ echo $claims->email;       // WARNING: not sanitized
 echo $claims->username;    // WARNING: not sanitized
 ```
 
-## Token Validation with Introspection
-
-Validates tokens remotely via RFC 7662 introspection endpoint. Supports caching and JWKS fallback on network errors.
+### Token Validation with Introspection
 
 ```php
 use Turnkey\AuthClient\IntrospectionClient;
@@ -75,7 +289,7 @@ $client = new IntrospectionClient(
     clientSecret: 'secret',
     httpClient: $httpClient,
     logger: $logger,
-    cache: $cache,              // optional: IntrospectionCacheInterface
+    cache: $cache,              // optional: CacheInterface
     cacheTtlSeconds: 300,       // default: 5 minutes
     fallbackValidator: $jwksValidator,  // optional: fall back on network errors
 );
@@ -90,9 +304,7 @@ if ($response->active) {
 }
 ```
 
-## Token Acquisition (Client Credentials)
-
-Obtains bearer tokens for outbound API calls. Caches tokens in memory and proactively refreshes at 80% of lifetime.
+### Token Acquisition (Client Credentials)
 
 ```php
 use Turnkey\AuthClient\OAuthTokenProvider;
@@ -113,15 +325,11 @@ $token = $provider->getToken();
 $provider->close();
 ```
 
-### With Redis Cache (php-fpm)
+#### With Persistent Cache (php-fpm)
 
-In php-fpm each request is a fresh process, so the in-memory token cache is lost between requests. Pass a `RedisClientInterface` to persist the token in Redis:
+In php-fpm each request is a fresh process, so the in-memory token cache is lost. Pass a `CacheInterface` to persist across requests:
 
 ```php
-use Turnkey\AuthClient\Redis\PrefixedClient;
-
-$redis = new PrefixedClient(new Predis('tcp://redis:6379'), prefix: 'myapp:');
-
 $provider = new OAuthTokenProvider(
     tokenEndpoint: 'https://auth.example.com/oauth/token',
     clientId: 'my-service',
@@ -129,7 +337,7 @@ $provider = new OAuthTokenProvider(
     httpClient: $httpClient,
     logger: $logger,
     scopes: ['api.read', 'api.write'],
-    redis: $redis,                          // persists token across requests
+    cache: $cache,                          // persists token across requests
     cacheKeyNamespace: 'token_provider:',   // default, keys: "myapp:token_provider:oauth_token"
 );
 ```
@@ -182,86 +390,65 @@ class AccountController
 }
 ```
 
-## Symfony Middleware
+## Caching
 
-Register as kernel event listeners (priority ensures auth runs before scope checks).
+Both `IntrospectionClient` and `OAuthTokenProvider` share the same `CacheInterface`.
 
-### Bearer Token Authentication
-
-```php
-// services.yaml
-services:
-    Turnkey\AuthClient\Middleware\BearerAuthMiddleware:
-        arguments:
-            $validator: '@Turnkey\AuthClient\JwksValidator'
-        tags:
-            - { name: kernel.event_listener, event: kernel.request, priority: 256 }
-```
-
-### Scope Enforcement
+### Redis Cache with Prefixed Client
 
 ```php
-// services.yaml
-services:
-    app.require_admin_scope:
-        class: Turnkey\AuthClient\Middleware\RequireScopeMiddleware
-        factory: ['Turnkey\AuthClient\Middleware\RequireScopeMiddleware', 'single']
-        arguments: ['admin']
-        tags:
-            - { name: kernel.event_listener, event: kernel.request, priority: 128 }
+use Predis\Client as Predis;
+use Turnkey\AuthClient\Redis\PrefixedClient;
+use Turnkey\AuthClient\Cache\RedisCache;
 
-    # Or require any of multiple scopes
-    app.require_write_scope:
-        class: Turnkey\AuthClient\Middleware\RequireScopeMiddleware
-        factory: ['Turnkey\AuthClient\Middleware\RequireScopeMiddleware', 'anyOf']
-        arguments:
-            - ['write', 'admin']
-        tags:
-            - { name: kernel.event_listener, event: kernel.request, priority: 128 }
+$predis = new Predis('tcp://127.0.0.1:6379');
+$redis = new PrefixedClient($predis, prefix: 'myapp:');
+
+// Introspection cache with namespace: keys → "myapp:introspection:<sha256>"
+$introspectionCache = new RedisCache($redis, keyNamespace: 'introspection:');
+
+// Token provider cache with namespace: keys → "myapp:token_provider:oauth_token"
+// (namespace configured via OAuthTokenProvider's $cacheKeyNamespace)
+$tokenCache = new RedisCache($redis);
 ```
 
-### Accessing Claims in Controllers
+### Default Prefix
+
+If no prefix is specified (or empty string), defaults to `"authclient:"`:
 
 ```php
-use Turnkey\AuthClient\Middleware\BearerAuthMiddleware;
-
-class MyController
-{
-    public function index(Request $request): Response
-    {
-        $claims = BearerAuthMiddleware::getClaimsFromRequest($request);
-
-        return new JsonResponse([
-            'client_id' => $claims->clientId,
-            'scopes' => $claims->scopes,
-            'user_id' => $claims->userId,
-        ]);
-    }
-}
+$redis = new PrefixedClient($predis);
 ```
 
-### Development Mode (NoopAuth)
-
-Bypasses token validation and injects fixed claims. **Never use in production.**
+### With phpredis Extension
 
 ```php
-use Turnkey\AuthClient\Claims;
-use Turnkey\AuthClient\Middleware\NoopAuthMiddleware;
+$phpredis = new \Redis();
+$phpredis->connect('127.0.0.1', 6379);
 
-// services.yaml (dev only)
-services:
-    Turnkey\AuthClient\Middleware\NoopAuthMiddleware:
-        arguments:
-            $defaultClaims: !service
-                class: Turnkey\AuthClient\Claims
-                arguments:
-                    $clientId: 'dev-client'
-                    $scopes: ['admin', 'read', 'write']
-                    $userId: 'dev-user'
-                    $email: 'dev@example.com'
-        tags:
-            - { name: kernel.event_listener, event: kernel.request, priority: 256 }
+$redis = new PrefixedClient($phpredis, prefix: 'myapp:');
 ```
+
+### In-Memory Cache
+
+For single-process or testing scenarios:
+
+```php
+use Turnkey\AuthClient\Cache\InMemoryCache;
+
+$cache = new InMemoryCache(maxSize: 1000);
+```
+
+### Test Isolation
+
+Use unique prefixes per test to avoid key collisions:
+
+```php
+$prefix = 'test:' . bin2hex(random_bytes(4)) . ':';
+$redis = new PrefixedClient($predis, prefix: $prefix);
+```
+
+## Middleware
 
 ### Custom Error Handling
 
@@ -275,129 +462,17 @@ $middleware = new BearerAuthMiddleware(
 );
 ```
 
-## Redis Caching with Prefixed Client
+### Scope Enforcement (Multiple Scopes)
 
-The `PrefixedClient` wraps any Redis client (Predis or phpredis) and automatically prefixes all keys — matching the go-redis `PrefixedClient` pattern.
-
-### Basic Usage
-
-```php
-use Predis\Client as Predis;
-use Turnkey\AuthClient\Redis\PrefixedClient;
-use Turnkey\AuthClient\Cache\RedisCache;
-
-$predis = new Predis('tcp://127.0.0.1:6379');
-
-// Wrap with prefix — all keys become "myapp:*"
-$redis = new PrefixedClient($predis, prefix: 'myapp:');
-
-// Use with introspection cache
-// Keys become: "myapp:introspection:<sha256>"
-$cache = new RedisCache($redis);
-```
-
-### Default Prefix
-
-If no prefix is specified (or empty string), defaults to `"authclient:"`:
-
-```php
-$redis = new PrefixedClient($predis);
-// Keys: "authclient:introspection:<sha256>"
-```
-
-### Test Isolation
-
-Use unique prefixes per test to avoid key collisions (same pattern as Go):
-
-```php
-$prefix = 'test:' . bin2hex(random_bytes(4)) . ':';
-$redis = new PrefixedClient($predis, prefix: $prefix);
-// Keys: "test:a1b2c3d4:introspection:<sha256>"
-```
-
-### With phpredis Extension
-
-```php
-$phpredis = new \Redis();
-$phpredis->connect('127.0.0.1', 6379);
-
-$redis = new PrefixedClient($phpredis, prefix: 'myapp:');
-```
-
-### Retrieving the Prefix
-
-```php
-$redis = new PrefixedClient($predis, prefix: 'myapp:');
-echo $redis->getPrefix(); // "myapp:"
-
-// Build full key when needed (e.g. for monitoring)
-$fullKey = $redis->getPrefix() . 'introspection:' . hash('sha256', $token);
-```
-
-## In-Memory Cache (Non-Redis)
-
-For single-process or testing scenarios:
-
-```php
-use Turnkey\AuthClient\Cache\InMemoryCache;
-
-$cache = new InMemoryCache(maxSize: 1000);
-```
-
-## Full Wiring Example
-
-```php
-use Predis\Client as Predis;
-use Symfony\Component\HttpClient\HttpClient;
-use Turnkey\AuthClient\Cache\RedisCache;
-use Turnkey\AuthClient\IntrospectionClient;
-use Turnkey\AuthClient\JwksProvider;
-use Turnkey\AuthClient\JwksValidator;
-use Turnkey\AuthClient\OAuthTokenProvider;
-use Turnkey\AuthClient\Redis\PrefixedClient;
-
-$httpClient = HttpClient::create();
-$logger = /* PSR-3 logger */;
-
-// Redis with prefix
-$redis = new PrefixedClient(new Predis('tcp://redis:6379'), prefix: 'myapp:');
-$cache = new RedisCache($redis);
-
-// JWKS validator
-$jwksProvider = new JwksProvider(
-    jwksEndpoint: 'https://auth.example.com/.well-known/jwks.json',
-    httpClient: $httpClient,
-    logger: $logger,
-);
-
-$jwksValidator = new JwksValidator(
-    jwksProvider: $jwksProvider,
-    issuer: 'https://auth.example.com',
-    audience: 'https://api.example.com',
-    logger: $logger,
-);
-
-// Introspection with Redis cache + JWKS fallback
-$introspectionClient = new IntrospectionClient(
-    introspectionEndpoint: 'https://auth.example.com/oauth/introspect',
-    clientId: 'my-service',
-    clientSecret: getenv('CLIENT_SECRET'),
-    httpClient: $httpClient,
-    logger: $logger,
-    cache: $cache,
-    cacheTtlSeconds: 300,
-    fallbackValidator: $jwksValidator,
-);
-
-// Token provider for outbound API calls
-$tokenProvider = new OAuthTokenProvider(
-    tokenEndpoint: 'https://auth.example.com/oauth/token',
-    clientId: 'my-service',
-    clientSecret: getenv('CLIENT_SECRET'),
-    httpClient: $httpClient,
-    logger: $logger,
-    scopes: ['api.read'],
-);
+```yaml
+# Any of these scopes grants access (OR logic)
+app.require_write_scope:
+    class: Turnkey\AuthClient\Middleware\RequireScopeMiddleware
+    factory: ['Turnkey\AuthClient\Middleware\RequireScopeMiddleware', 'anyOf']
+    arguments:
+        - ['write', 'admin']
+    tags:
+        - { name: kernel.event_listener, event: kernel.request, priority: 128 }
 ```
 
 ## Error Handling
