@@ -1,0 +1,18 @@
+FROM php:8.3-cli
+
+RUN apt-get update -qq \
+    && apt-get install -y -qq git unzip > /dev/null 2>&1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer > /dev/null 2>&1
+
+WORKDIR /app
+
+COPY composer.json ./
+RUN composer install -q && rm -rf /root/.composer/cache
+
+# At runtime the volume mount overwrites /app, so the entrypoint
+# restores vendor/ from the image layer if it's missing on the host.
+ENTRYPOINT ["sh", "-c", "[ -d vendor ] || cp -a /app-vendor/. vendor/ && exec \"$@\"", "--"]
+
+# Pre-stage vendor for the entrypoint copy-back
+RUN cp -a vendor /app-vendor
