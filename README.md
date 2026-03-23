@@ -27,6 +27,7 @@ composer require predis/predis
 | `BearerAuthMiddleware` | Symfony kernel listener for token validation |
 | `RequireScopeMiddleware` | Symfony kernel listener for scope enforcement |
 | `PrefixedClient` | Redis client wrapper with automatic key prefixing |
+| `FallbackCache` | Decorator that falls back to in-memory cache when Redis is unavailable |
 | `CacheInterface` | Generic cache interface shared by introspection and token provider |
 
 ## Symfony Integration (Full Example)
@@ -427,6 +428,42 @@ $phpredis = new \Redis();
 $phpredis->connect('127.0.0.1', 6379);
 
 $redis = new PrefixedClient($phpredis, prefix: 'myapp:');
+```
+
+### Fallback Cache (Redis with In-Memory Fallback)
+
+Wraps a primary cache with a fallback so operations degrade gracefully when Redis is unavailable. After a failure, the primary is skipped for a cooldown period to avoid repeated connection timeouts:
+
+```php
+use Turnkey\AuthClient\Cache\FallbackCache;
+use Turnkey\AuthClient\Cache\RedisCache;
+use Turnkey\AuthClient\Cache\InMemoryCache;
+
+$cache = new FallbackCache(
+    primary: new RedisCache($redis, keyNamespace: 'introspection:'),
+    fallback: new InMemoryCache(),
+    cooldownSeconds: 30,  // skip Redis for 30s after a failure
+);
+```
+
+Symfony service definition:
+
+```yaml
+services:
+    app.cache.primary:
+        class: Turnkey\AuthClient\Cache\RedisCache
+        arguments:
+            $redis: '@Turnkey\AuthClient\Redis\PrefixedClient'
+
+    app.cache.fallback:
+        class: Turnkey\AuthClient\Cache\InMemoryCache
+
+    Turnkey\AuthClient\CacheInterface:
+        class: Turnkey\AuthClient\Cache\FallbackCache
+        arguments:
+            $primary: '@app.cache.primary'
+            $fallback: '@app.cache.fallback'
+            $cooldownSeconds: 30
 ```
 
 ### In-Memory Cache

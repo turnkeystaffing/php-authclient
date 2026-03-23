@@ -1,4 +1,5 @@
 .idea
+.claude/
 .vscode/
 /vendor/
 composer.lock
