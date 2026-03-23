@@ -12,8 +12,8 @@ class OAuthTokenProvider implements TokenProviderInterface
     private const MAX_EXPIRES_IN = 31_536_000; // 1 year
     private const REFRESH_THRESHOLD = 0.8;
     private const MAX_RESPONSE_BODY = 1_048_576; // 1 MB
-    private const CACHE_KEY = 'oauth_token';
 
+    private readonly string $cacheKey;
     private ?string $cachedToken = null;
     private ?float $tokenExpiresAt = null;
     private ?float $refreshAt = null;
@@ -33,6 +33,12 @@ class OAuthTokenProvider implements TokenProviderInterface
         if (!str_starts_with($tokenEndpoint, 'https://')) {
             $this->logger->warning('Token endpoint is not HTTPS', ['endpoint' => $tokenEndpoint]);
         }
+
+        // Derive a unique cache key from client identity + requested scopes
+        // so multiple providers with different configs don't collide.
+        $sortedScopes = $this->scopes;
+        sort($sortedScopes);
+        $this->cacheKey = 'token:' . hash('sha256', $this->clientId . "\0" . implode(' ', $sortedScopes));
     }
 
     public function getToken(): string
@@ -87,14 +93,14 @@ class OAuthTokenProvider implements TokenProviderInterface
 
     private function loadFromCache(float $now): void
     {
-        $data = $this->cache->get($this->cacheKeyNamespace . self::CACHE_KEY);
+        $data = $this->cache->get($this->cacheKeyNamespace . $this->cacheKey);
         if (!is_array($data) || !isset($data['token'], $data['expires_at'])) {
             return;
         }
 
         $expiresAt = (float) $data['expires_at'];
         if ($now >= $expiresAt) {
-            $this->cache->delete($this->cacheKeyNamespace . self::CACHE_KEY);
+            $this->cache->delete($this->cacheKeyNamespace . $this->cacheKey);
             return;
         }
 
@@ -116,7 +122,7 @@ class OAuthTokenProvider implements TokenProviderInterface
             return;
         }
 
-        $this->cache->set($this->cacheKeyNamespace . self::CACHE_KEY, [
+        $this->cache->set($this->cacheKeyNamespace . $this->cacheKey, [
             'token' => $token,
             'issued_at' => $issuedAt,
             'expires_at' => $expiresAt,
