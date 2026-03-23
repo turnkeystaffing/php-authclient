@@ -27,6 +27,7 @@ composer require predis/predis
 | `BearerAuthMiddleware` | Symfony kernel listener for token validation |
 | `RequireScopeMiddleware` | Symfony kernel listener for scope enforcement |
 | `PrefixedClient` | Redis client wrapper with automatic key prefixing |
+| `ScopeValidator` | Validates scope name format (`service:resource:action`, wildcards, OIDC) |
 | `FallbackCache` | Decorator that falls back to in-memory cache when Redis is unavailable |
 | `CacheInterface` | Generic cache interface shared by introspection and token provider |
 
@@ -339,8 +340,12 @@ $provider = new OAuthTokenProvider(
     logger: $logger,
     scopes: ['api.read', 'api.write'],
     cache: $cache,                          // persists token across requests
-    cacheKeyNamespace: 'token_provider:',   // default, keys: "myapp:token_provider:oauth_token"
+    cacheKeyNamespace: 'token_provider:',   // default, keys: "myapp:token_provider:token:<sha256>"
 );
+
+// Cache keys are automatically scoped by clientId + scopes, so multiple
+// providers sharing the same cache won't collide.
+
 ```
 
 ## Scope Checking
@@ -348,9 +353,55 @@ $provider = new OAuthTokenProvider(
 ```php
 use Turnkey\AuthClient\ScopeChecker;
 
-ScopeChecker::hasScope($claims, 'admin');           // exact match
-ScopeChecker::hasAnyScope($claims, ['read', 'write']); // any match
+// Exact matching
+ScopeChecker::hasScope($claims, 'admin');                        // exact match
+ScopeChecker::hasAnyScope($claims, ['read', 'write']);           // any match
+ScopeChecker::hasAllScopes($claims, ['read', 'write']);          // all required
+
+// Wildcard matching — user scopes with wildcards match specific requirements
+// User has "expenses:*" → matches "expenses:approve", "expenses:submit"
+// User has "bgc:*"      → matches "bgc:contractors:read" (spans sub-segments)
+// User has "*:*"        → matches any scope
+ScopeChecker::hasScope($claims, 'expenses:approve');  // true if user has "expenses:*"
+
+// SECURITY: No bidirectional matching. A user with "admin:read" does NOT satisfy
+// a requirement for "admin:*". Only users explicitly granted "admin:*" match it.
+
+// Direct pattern matching (without Claims)
+ScopeChecker::matchesPattern('expenses:*', 'expenses:approve');  // true
+ScopeChecker::matchesPattern('bgc:*', 'bgc:contractors:read');   // true
 ```
+
+### Scope Name Validation
+
+Validates scope names follow the `service:resource:action` convention:
+
+```php
+use Turnkey\AuthClient\ScopeValidator;
+
+// Validate individual scope name
+ScopeValidator::validateName('bgc:contractors:read');  // ok
+ScopeValidator::validateName('admin:*');               // ok (wildcard)
+ScopeValidator::validateName('openid');                // ok (OIDC standard)
+ScopeValidator::validateName('BAD');                   // throws InvalidArgumentException
+
+// Validate scope prefix matches your service code
+ScopeValidator::validateScopePrefix('bgc:contractors:read', 'bgc');    // ok
+ScopeValidator::validateScopePrefix('admin:users:read', 'bgc');        // throws
+
+// Batch validation
+ScopeValidator::validateScopeNames(['expenses:approve', 'admin:*']);   // ok
+
+// Helpers
+ScopeValidator::isOidcStandardScope('openid');    // true
+ScopeValidator::containsWildcard('admin:*');      // true
+```
+
+Valid scope formats:
+- **OIDC standard**: `openid`, `profile`, `email`, `address`, `phone`, `offline_access`
+- **2-segment**: `resource:action` (e.g. `expenses:approve`)
+- **3-segment**: `service:resource:action` (e.g. `bgc:contractors:read`)
+- **Wildcards**: `admin:*`, `bgc:contractors:*`, `*:*`, `*` — wildcard must be the entire final segment
 
 ## Step-up Authentication
 
@@ -408,8 +459,8 @@ $redis = new PrefixedClient($predis, prefix: 'myapp:');
 // Introspection cache with namespace: keys → "myapp:introspection:<sha256>"
 $introspectionCache = new RedisCache($redis, keyNamespace: 'introspection:');
 
-// Token provider cache with namespace: keys → "myapp:token_provider:oauth_token"
-// (namespace configured via OAuthTokenProvider's $cacheKeyNamespace)
+// Token provider cache with namespace: keys → "myapp:token_provider:token:<sha256>"
+// Cache key is derived from clientId + scopes so multiple providers don't collide
 $tokenCache = new RedisCache($redis);
 ```
 
