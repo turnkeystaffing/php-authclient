@@ -32,7 +32,7 @@ class MiddlewareTest extends TestCase
 
     public function testBearerAuthValidToken(): void
     {
-        $validator = new NoopValidator(new Claims(clientId: 'test', scopes: ['read']));
+        $validator = new NoopValidator(new Claims(clientId: 'test', scopes: ['svc:data:read']));
         $middleware = new BearerAuthMiddleware($validator);
 
         $request = Request::create('/', 'GET', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer some-token']);
@@ -140,10 +140,10 @@ class MiddlewareTest extends TestCase
 
     public function testRequireScopeGranted(): void
     {
-        $middleware = RequireScopeMiddleware::single('admin');
+        $middleware = RequireScopeMiddleware::single('svc:admin:all');
 
         $request = Request::create('/');
-        $request->attributes->set(BearerAuthMiddleware::CLAIMS_ATTRIBUTE, new Claims(clientId: 'c1', scopes: ['admin', 'read']));
+        $request->attributes->set(BearerAuthMiddleware::CLAIMS_ATTRIBUTE, new Claims(clientId: 'c1', scopes: ['svc:admin:all', 'svc:data:read']));
         $event = $this->createEvent($request);
 
         $middleware->onKernelRequest($event);
@@ -153,10 +153,10 @@ class MiddlewareTest extends TestCase
 
     public function testRequireScopeDenied(): void
     {
-        $middleware = RequireScopeMiddleware::single('admin');
+        $middleware = RequireScopeMiddleware::single('svc:admin:all');
 
         $request = Request::create('/');
-        $request->attributes->set(BearerAuthMiddleware::CLAIMS_ATTRIBUTE, new Claims(clientId: 'c1', scopes: ['read']));
+        $request->attributes->set(BearerAuthMiddleware::CLAIMS_ATTRIBUTE, new Claims(clientId: 'c1', scopes: ['svc:data:read']));
         $event = $this->createEvent($request);
 
         $middleware->onKernelRequest($event);
@@ -167,10 +167,10 @@ class MiddlewareTest extends TestCase
 
     public function testRequireAnyScopeGranted(): void
     {
-        $middleware = RequireScopeMiddleware::anyOf(['admin', 'write']);
+        $middleware = RequireScopeMiddleware::anyOf(['svc:admin:all', 'svc:data:write']);
 
         $request = Request::create('/');
-        $request->attributes->set(BearerAuthMiddleware::CLAIMS_ATTRIBUTE, new Claims(clientId: 'c1', scopes: ['write']));
+        $request->attributes->set(BearerAuthMiddleware::CLAIMS_ATTRIBUTE, new Claims(clientId: 'c1', scopes: ['svc:data:write']));
         $event = $this->createEvent($request);
 
         $middleware->onKernelRequest($event);
@@ -180,7 +180,7 @@ class MiddlewareTest extends TestCase
 
     public function testRequireScopeNoClaims(): void
     {
-        $middleware = RequireScopeMiddleware::single('admin');
+        $middleware = RequireScopeMiddleware::single('svc:admin:all');
 
         $request = Request::create('/');
         $event = $this->createEvent($request);
@@ -192,7 +192,7 @@ class MiddlewareTest extends TestCase
 
     public function testRequireScopeSkipsSubRequests(): void
     {
-        $middleware = RequireScopeMiddleware::single('admin');
+        $middleware = RequireScopeMiddleware::single('svc:admin:all');
 
         $request = Request::create('/');
         $event = $this->createEvent($request, isMainRequest: false);
@@ -206,7 +206,7 @@ class MiddlewareTest extends TestCase
 
     public function testNoopAuthInjectsClaims(): void
     {
-        $claims = new Claims(clientId: 'dev', scopes: ['admin']);
+        $claims = new Claims(clientId: 'dev', scopes: ['svc:admin:all']);
         $middleware = new NoopAuthMiddleware($claims);
 
         $request = Request::create('/');
