@@ -95,4 +95,25 @@ class IntrospectionResponseTest extends TestCase
         $claims = $response->toClaims();
         $this->assertSame([], $claims->scopes);
     }
+
+    public function testToClaimsMapsSubjectToUserIdAndEmail(): void
+    {
+        $claims = IntrospectionResponse::fromArray([
+            'active' => true,
+            'client_id' => 'c1',
+            'sub' => 'user-1',
+            'email' => 'u@example.com',
+        ])->toClaims();
+
+        $this->assertSame('user-1', $claims->userId);
+        $this->assertSame('user-1', $claims->subject);
+        $this->assertSame('u@example.com', $claims->email);
+    }
+
+    public function testEmailRoundTripsThroughJson(): void
+    {
+        $response = IntrospectionResponse::fromArray(['active' => true, 'email' => 'u@example.com']);
+        $decoded = json_decode(json_encode($response), true);
+        $this->assertSame('u@example.com', IntrospectionResponse::fromArray($decoded)->email);
+    }
 }

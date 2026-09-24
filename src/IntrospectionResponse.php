@@ -20,6 +20,7 @@ class IntrospectionResponse implements \JsonSerializable
         public readonly ?string $scope = null,
         public readonly ?string $grantType = null,
         public readonly ?int $authTime = null,
+        public readonly ?string $email = null,
     ) {
     }
 
@@ -39,6 +40,7 @@ class IntrospectionResponse implements \JsonSerializable
             scope: $data['scope'] ?? null,
             grantType: $data['gty'] ?? null,
             authTime: isset($data['auth_time']) ? (int) $data['auth_time'] : null,
+            email: $data['email'] ?? null,
         );
     }
 
@@ -58,9 +60,16 @@ class IntrospectionResponse implements \JsonSerializable
             'scope' => $this->scope,
             'gty' => $this->grantType,
             'auth_time' => $this->authTime,
+            'email' => $this->email,
         ];
     }
 
+    /**
+     * Convert to Claims. Unlike go-authclient's ClaimsFromIntrospection, an empty
+     * client_id is rejected (consistent with JwksValidator).
+     *
+     * Security: email and username are passed through unsanitized — see Claims.
+     */
     public function toClaims(): Claims
     {
         if (!$this->active) {
@@ -77,6 +86,8 @@ class IntrospectionResponse implements \JsonSerializable
         return new Claims(
             clientId: $clientId,
             scopes: array_values(array_filter($scopes, fn($s) => $s !== '')),
+            userId: $this->sub,
+            email: $this->email,
             username: $this->username,
             expiresAt: $this->exp !== null ? new \DateTimeImmutable('@' . $this->exp) : null,
             subject: $this->sub,
