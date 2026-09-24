@@ -68,6 +68,8 @@ final class ScopeChecker
     /**
      * Check if claims contain any of the required scopes (wildcard-aware).
      * Empty and invalid required scopes are skipped.
+     *
+     * @param string[] $requiredScopes
      */
     public static function hasAnyScope(?Claims $claims, array $requiredScopes): bool
     {
@@ -76,7 +78,7 @@ final class ScopeChecker
         }
 
         foreach ($requiredScopes as $scope) {
-            if (is_string($scope) && self::hasScope($claims, $scope)) {
+            if (self::hasScope($claims, $scope)) {
                 return true;
             }
         }
@@ -86,6 +88,8 @@ final class ScopeChecker
 
     /**
      * Alias of hasAnyScope() for naming parity with go-authclient's HasAnyScopeWildcard.
+     *
+     * @param string[] $requiredScopes
      */
     public static function hasAnyScopeWildcard(?Claims $claims, array $requiredScopes): bool
     {
@@ -95,6 +99,8 @@ final class ScopeChecker
     /**
      * Check if claims contain any of the required scopes using exact matching only.
      * Equivalent to go-authclient's HasAnyScope. Empty and invalid required scopes are skipped.
+     *
+     * @param string[] $requiredScopes
      */
     public static function hasAnyScopeExact(?Claims $claims, array $requiredScopes): bool
     {
@@ -103,7 +109,7 @@ final class ScopeChecker
         }
 
         foreach ($requiredScopes as $scope) {
-            if (is_string($scope) && self::hasScopeExact($claims, $scope)) {
+            if (self::hasScopeExact($claims, $scope)) {
                 return true;
             }
         }
@@ -114,6 +120,8 @@ final class ScopeChecker
     /**
      * Check if claims contain all of the required scopes (wildcard-aware).
      * An empty or invalid required scope can never be satisfied.
+     *
+     * @param string[] $requiredScopes
      */
     public static function hasAllScopes(?Claims $claims, array $requiredScopes): bool
     {
@@ -122,7 +130,7 @@ final class ScopeChecker
         }
 
         foreach ($requiredScopes as $scope) {
-            if (!is_string($scope) || !self::hasScope($claims, $scope)) {
+            if (!self::hasScope($claims, $scope)) {
                 return false;
             }
         }

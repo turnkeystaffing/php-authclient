@@ -51,6 +51,9 @@ final class ScopeManifest implements \JsonSerializable
         );
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function jsonSerialize(): array
     {
         $out = ['service_code' => $this->serviceCode, 'scopes' => $this->scopes];

@@ -28,7 +28,7 @@ class JwksValidator implements TokenValidatorInterface
             throw new \InvalidArgumentException('authclient: issuer is required');
         }
 
-        $audience = array_values(array_filter((array) $audience, fn($a) => is_string($a) && $a !== ''));
+        $audience = array_values(array_filter((array) $audience, fn($a) => $a !== ''));
         if ($audience === []) {
             throw new \InvalidArgumentException('authclient: audience is required');
         }

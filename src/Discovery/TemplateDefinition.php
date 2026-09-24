@@ -46,6 +46,9 @@ final class TemplateDefinition implements \JsonSerializable
         );
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function jsonSerialize(): array
     {
         $out = ['name' => $this->name];
