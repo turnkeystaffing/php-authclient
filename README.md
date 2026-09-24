@@ -25,7 +25,10 @@ composer require predis/predis
 | `OAuthTokenProvider` | Obtain tokens via client_credentials grant |
 | `NoopValidator` | Development/testing — returns fixed claims |
 | `BearerAuthMiddleware` | Symfony kernel listener for token validation |
-| `RequireScopeMiddleware` | Symfony kernel listener for scope enforcement |
+| `RequireScopeMiddleware` | Symfony kernel listener for scope enforcement (wildcard or exact) |
+| `NoopAuthMiddleware` / `NoopScopeMiddleware` | Development — inject fixed claims / skip scope checks |
+| `ScopeManifest` / `ManifestLoader` | Service scope manifest model, YAML/JSON loading and validation |
+| `DiscoveryHandler` | Controller serving the scope manifest to the auth service |
 | `PrefixedClient` | Redis client wrapper with automatic key prefixing |
 | `ScopeValidator` | Validates scope name format (`service:resource:action`, wildcards, OIDC) |
 | `FallbackCache` | Decorator that falls back to in-memory cache when Redis is unavailable |
@@ -143,7 +146,7 @@ services:
             $clientId: '%auth.client_id%'
             $clientSecret: '%auth.client_secret%'
             $httpClient: '@authclient.http_client'
-            $scopes: ['api.read']
+            $scopes: ['api:data:read']
             $cache: '@Turnkey\AuthClient\CacheInterface'
             $cacheKeyNamespace: 'token_provider:'
 
@@ -162,7 +165,7 @@ services:
     app.require_admin_scope:
         class: Turnkey\AuthClient\Middleware\RequireScopeMiddleware
         factory: ['Turnkey\AuthClient\Middleware\RequireScopeMiddleware', 'single']
-        arguments: ['admin']
+        arguments: ['myapp:admin:manage']
         tags:
             - { name: kernel.event_listener, event: kernel.request, priority: 128 }
 ```
@@ -180,7 +183,7 @@ services:
                 class: Turnkey\AuthClient\Claims
                 arguments:
                     $clientId: 'dev-client'
-                    $scopes: ['admin', 'read', 'write']
+                    $scopes: ['myapp:*']
                     $userId: 'dev-user'
                     $email: 'dev@example.com'
         tags:
@@ -268,7 +271,7 @@ $jwksProvider = new JwksProvider(
 $validator = new JwksValidator(
     jwksProvider: $jwksProvider,
     issuer: 'https://auth.example.com',
-    audience: 'https://api.example.com',  // required
+    audience: 'https://api.example.com',  // required; string or list (any match)
     logger: $logger,
 );
 
@@ -292,14 +295,15 @@ $client = new IntrospectionClient(
     httpClient: $httpClient,
     logger: $logger,
     cache: $cache,              // optional: CacheInterface
-    cacheTtlSeconds: 300,       // default: 5 minutes
+    cacheTtlSeconds: 300,       // default: 5 minutes; 0 = use token's remaining lifetime
     fallbackValidator: $jwksValidator,  // optional: fall back on network errors
 );
 
-// As validator (returns Claims)
+// As validator (returns Claims). Falls back to $jwksValidator only on network
+// errors — not on HTTP error responses or unparseable bodies.
 $claims = $client->validateToken($token);
 
-// As introspector (returns IntrospectionResponse)
+// As introspector (returns IntrospectionResponse, never falls back)
 $response = $client->introspect($token);
 if ($response->active) {
     $claims = $response->toClaims();
@@ -317,7 +321,7 @@ $provider = new OAuthTokenProvider(
     clientSecret: 'secret',
     httpClient: $httpClient,
     logger: $logger,
-    scopes: ['api.read', 'api.write'],
+    scopes: ['api:data:read', 'api:data:write'],
 );
 
 $token = $provider->getToken();
@@ -338,7 +342,7 @@ $provider = new OAuthTokenProvider(
     clientSecret: 'secret',
     httpClient: $httpClient,
     logger: $logger,
-    scopes: ['api.read', 'api.write'],
+    scopes: ['api:data:read', 'api:data:write'],
     cache: $cache,                          // persists token across requests
     cacheKeyNamespace: 'token_provider:',   // default, keys: "myapp:token_provider:token:<sha256>"
 );
@@ -353,16 +357,24 @@ $provider = new OAuthTokenProvider(
 ```php
 use Turnkey\AuthClient\ScopeChecker;
 
-// Exact matching
-ScopeChecker::hasScope($claims, 'admin');                        // exact match
-ScopeChecker::hasAnyScope($claims, ['read', 'write']);           // any match
-ScopeChecker::hasAllScopes($claims, ['read', 'write']);          // all required
+// Wildcard-aware matching (default)
+ScopeChecker::hasScope($claims, 'bgc:contractors:read');                  // single scope
+ScopeChecker::hasAnyScope($claims, ['bgc:contractors:read', 'bgc:*']);   // any match
+ScopeChecker::hasAllScopes($claims, ['bgc:contractors:read', 'bgc:contractors:write']);
 
-// Wildcard matching — user scopes with wildcards match specific requirements
+// User scopes with wildcards match specific requirements:
 // User has "expenses:*" → matches "expenses:approve", "expenses:submit"
 // User has "bgc:*"      → matches "bgc:contractors:read" (spans sub-segments)
 // User has "*:*"        → matches any scope
 ScopeChecker::hasScope($claims, 'expenses:approve');  // true if user has "expenses:*"
+
+// Exact matching only (go-authclient HasScope / HasAnyScope semantics)
+ScopeChecker::hasScopeExact($claims, 'bgc:contractors:read');   // "bgc:*" does NOT satisfy this
+ScopeChecker::hasAnyScopeExact($claims, ['bgc:contractors:read', 'bgc:contractors:write']);
+
+// Aliases for naming parity with go-authclient
+ScopeChecker::hasScopeWildcard($claims, 'bgc:contractors:read');     // == hasScope
+ScopeChecker::hasAnyScopeWildcard($claims, ['bgc:contractors:read']); // == hasAnyScope
 
 // SECURITY: No bidirectional matching. A user with "admin:read" does NOT satisfy
 // a requirement for "admin:*". Only users explicitly granted "admin:*" match it.
@@ -371,6 +383,11 @@ ScopeChecker::hasScope($claims, 'expenses:approve');  // true if user has "expen
 ScopeChecker::matchesPattern('expenses:*', 'expenses:approve');  // true
 ScopeChecker::matchesPattern('bgc:*', 'bgc:contractors:read');   // true
 ```
+
+All `ScopeChecker` methods validate both the required scope and the token's scopes with
+`ScopeValidator::isValidScope()`. Malformed scopes (e.g. `BOGUS:::thing`, `a:b:c:d`, single-segment
+names like `admin`, uppercase) are silently skipped and never match — use the
+`service:resource:action` format (or OIDC standard scopes).
 
 ### Scope Name Validation
 
@@ -392,6 +409,10 @@ ScopeValidator::validateScopePrefix('admin:users:read', 'bgc');        // throws
 // Batch validation
 ScopeValidator::validateScopeNames(['expenses:approve', 'admin:*']);   // ok
 
+// Non-throwing check (used by ScopeChecker)
+ScopeValidator::isValidScope('bgc:contractors:read');  // true
+ScopeValidator::isValidScope('a:b:c:d');               // false
+
 // Helpers
 ScopeValidator::isOidcStandardScope('openid');    // true
 ScopeValidator::containsWildcard('admin:*');      // true
@@ -402,6 +423,69 @@ Valid scope formats:
 - **2-segment**: `resource:action` (e.g. `expenses:approve`)
 - **3-segment**: `service:resource:action` (e.g. `bgc:contractors:read`)
 - **Wildcards**: `admin:*`, `bgc:contractors:*`, `*:*`, `*` — wildcard must be the entire final segment
+
+## Scope Manifest & Discovery
+
+A service declares its scopes and role templates in a manifest, which the auth service
+fetches from a discovery endpoint.
+
+```yaml
+# config/scopes.yaml
+service_code: bgc
+scopes:
+  - name: bgc:contractors:read
+    description: Read contractors
+    category: contractors        # optional
+  - name: bgc:contractors:write
+    description: Write contractors
+templates:                       # optional
+  - name: viewer
+    description: Read-only access
+    scopes: [bgc:contractors:read]
+    replaces: legacy_viewer      # optional: external template this one supersedes
+```
+
+```php
+use Turnkey\AuthClient\Discovery\ManifestLoader;
+use Turnkey\AuthClient\Discovery\ManifestValidationException;
+
+try {
+    $manifest = ManifestLoader::fromFile(__DIR__ . '/config/scopes.yaml'); // .yaml, .yml or .json
+    // or: ManifestLoader::fromString($json, 'json');
+} catch (ManifestValidationException $e) {
+    $e->getErrors(); // every issue found, e.g. 'scope name "other:read" must start with service code "bgc"'
+}
+```
+
+Loading is strict: unknown fields are rejected, input is limited to 10 MB, 10 000 scopes and
+1 000 templates. Validation rules match go-authclient (and the auth service): `service_code` is
+`[a-z0-9_]+`, every scope name starts with the service code, wildcards only as the whole final
+segment, templates reference only scopes defined in the manifest and `replaces` must point to an
+external template.
+
+### Serving the manifest
+
+`DiscoveryHandler` is an invokable controller. `GET` returns the pre-serialized JSON
+(`Cache-Control: no-store`), any other method returns `405` with `Allow: GET`. Protect it with
+the auth middleware:
+
+```yaml
+# config/services.yaml
+services:
+    Turnkey\AuthClient\Discovery\DiscoveryHandler:
+        factory: ['Turnkey\AuthClient\Discovery\DiscoveryHandler', 'fromFile']
+        arguments: ['%kernel.project_dir%/config/scopes.yaml']
+        tags: ['controller.service_arguments']
+
+# config/routes.yaml
+scope_discovery:
+    path: /.well-known/scopes
+    controller: Turnkey\AuthClient\Discovery\DiscoveryHandler
+    methods: [GET]
+```
+
+Use `DiscoveryHandler::fromManifest($manifest)` for an in-memory manifest. File-based handlers can
+call `reload()` to re-read the file; if the new file is invalid, the previous manifest keeps being served.
 
 ## Step-up Authentication
 
@@ -483,7 +567,9 @@ $redis = new PrefixedClient($phpredis, prefix: 'myapp:');
 
 ### Fallback Cache (Redis with In-Memory Fallback)
 
-Wraps a primary cache with a fallback so operations degrade gracefully when Redis is unavailable. After a failure, the primary is skipped for a cooldown period to avoid repeated connection timeouts:
+Wraps a primary cache with a fallback so operations degrade gracefully when Redis is unavailable. After a failure, the primary is skipped for a cooldown period to avoid repeated connection timeouts.
+
+Writes go to both caches (dual-write) so the fallback is already warm on failover; deletes clear both. Pass an optional PSR `logger` to get a warning when the primary fails:
 
 ```php
 use Turnkey\AuthClient\Cache\FallbackCache;
@@ -494,6 +580,7 @@ $cache = new FallbackCache(
     primary: new RedisCache($redis, keyNamespace: 'introspection:'),
     fallback: new InMemoryCache(),
     cooldownSeconds: 30,  // skip Redis for 30s after a failure
+    logger: $logger,      // optional
 );
 ```
 
@@ -538,15 +625,39 @@ $redis = new PrefixedClient($predis, prefix: $prefix);
 
 ## Middleware
 
+### Error Responses
+
+Both middlewares return RFC 6750 JSON errors with
+`WWW-Authenticate: Bearer realm="api", error="…", error_description="…"`:
+
+| Situation | Status | `error` | `error_description` |
+|---|---|---|---|
+| No `Authorization` header | 401 | `invalid_request` | `Missing authorization header` |
+| Not a `Bearer` scheme (case-insensitive) | 401 | `invalid_request` | `Invalid authorization header format` |
+| Empty token | 401 | `invalid_request` | `Empty bearer token` |
+| Token longer than 4096 bytes | 401 | `invalid_request` | `Bearer token exceeds maximum length` |
+| Validator rejected the token | 401 | `invalid_token` | `Token validation failed` |
+| No claims on the request (scope middleware) | 401 | `invalid_token` | `Missing authentication context` |
+| Scope missing | 403 | `insufficient_scope` | `Required scope: X` / `Required one of scopes: X, Y` |
+
+Validator error details (expected issuer, audience, …) are never sent to the client — use a custom
+error handler to log them.
+
 ### Custom Error Handling
 
 ```php
 $middleware = new BearerAuthMiddleware(
     validator: $validator,
-    errorHandler: function (AuthClientError $error, Request $request): ?Response {
+    errorHandler: function (AuthClientError $error, Request $request, int $statusCode, string $errorCode, string $errorDescription): ?Response {
+        $logger->info('auth rejected', ['type' => $error->getErrorType(), 'reason' => $error->getMessage()]);
         // Return a Response to override default, or null to use default
-        return new JsonResponse(['msg' => 'auth failed'], 401);
+        return new JsonResponse(['msg' => 'auth failed'], $statusCode);
     },
+);
+
+$scope = RequireScopeMiddleware::single(
+    'bgc:contractors:read',
+    errorHandler: fn(Request $request, int $statusCode, string $errorCode, string $errorDescription): ?Response => null,
 );
 ```
 
@@ -558,10 +669,17 @@ app.require_write_scope:
     class: Turnkey\AuthClient\Middleware\RequireScopeMiddleware
     factory: ['Turnkey\AuthClient\Middleware\RequireScopeMiddleware', 'anyOf']
     arguments:
-        - ['write', 'admin']
+        - ['myapp:data:write', 'myapp:admin:manage']
     tags:
         - { name: kernel.event_listener, event: kernel.request, priority: 128 }
 ```
+
+### Wildcard vs Exact
+
+`single()` / `anyOf()` accept user wildcard scopes (`bgc:*` satisfies `bgc:contractors:read`).
+`exact()` / `anyOfExact()` require an exact match (go-authclient `HTTPRequireScope` /
+`HTTPRequireAnyScope` semantics). The constructor exposes the same choice via `allowWildcard`.
+`NoopScopeMiddleware` skips scope checks entirely (development only, pair with `NoopAuthMiddleware`).
 
 ## Error Handling
 
@@ -587,20 +705,52 @@ try {
 ## Security Notes
 
 - **Audience validation**: Required and enforced — tokens for other services are rejected
+- **Expiration required**: JWTs without an `exp` claim are rejected
 - **RSA only**: HMAC and `none` algorithms are rejected
-- **Token size limit**: 4096 bytes max (DoS prevention)
+- **Token size limit**: 4096 bytes max (DoS prevention) — enforced in middleware, JWKS validation and introspection
 - **No redirects**: HTTP requests disallow redirects to prevent credential leakage
-- **HTTPS warnings**: Non-HTTPS endpoints log a warning
+- **HTTPS warnings**: Non-HTTPS endpoints log a warning; logged URLs are stripped of credentials and query strings
 - **Unsanitized claims**: `Claims::$email` and `Claims::$username` are NOT sanitized — you must sanitize before using in SQL, HTML, or logs
-- **Bounded responses**: HTTP response bodies capped at 1 MB
+- **Bounded responses**: HTTP response bodies capped at 1 MB; token/introspection endpoints must answer HTTP 200
+- **No response echo**: Errors never include response bodies or server-provided values such as `token_type`
+- **Scope validation**: Malformed scopes in tokens are ignored by `ScopeChecker`
 - **RFC 6749 encoding**: Client credentials are percent-encoded per Section 2.3.1
-- **RFC 6750 errors**: Middleware returns proper `WWW-Authenticate` headers
+- **RFC 6750 errors**: Middleware returns proper `WWW-Authenticate` headers without leaking validator details
+
+## Upgrading
+
+Changes introduced while syncing with go-authclient (up to `6a0ce9b`) that can affect existing code:
+
+- **Scope names are validated.** `ScopeChecker` ignores scopes that are not OIDC standard scopes or
+  `service:resource:action` names (2–3 lowercase segments). Single-segment scopes like `admin`
+  or dotted ones like `api.read` never match any more.
+- **Middleware responses.** `BearerAuthMiddleware` returns 401 (previously 400 for malformed tokens)
+  with a generic `Token validation failed` description; `WWW-Authenticate` now includes `realm="api"`.
+  `RequireScopeMiddleware` uses `invalid_token` / `Missing authentication context` for missing claims and
+  `Required scope: …` descriptions; it throws on an empty scope list.
+- **JWKS validation** rejects tokens without `exp` and requires a non-empty issuer.
+- **OAuthTokenProvider** validates its configuration in the constructor (non-empty client ID/secret,
+  `http(s)` URL with a host), requires HTTP 200 and a non-empty `access_token`.
+- **IntrospectionClient** validates its configuration, requires HTTP 200 and a non-empty body, and
+  uses `introspect:`-prefixed cache keys (existing cache entries are simply re-fetched). The JWKS
+  fallback now applies in `validateToken()` only; `introspect()` throws on network errors.
+  `IntrospectionResponse::toClaims()` fills `userId` (from `sub`) and `email`.
+- **FallbackCache** writes to both caches on `set()` and deletes from both on `delete()`.
 
 ## Ported From
 
-This library is a PHP 8.2 / Symfony 7 port of [go-authclient](../go/src/go-authclient). Components not ported:
+This library is a PHP 8.2 / Symfony 7 port of [go-authclient](../go/src/go-authclient), synced up to
+go-authclient commit `6a0ce9b` (2026-03-23). Components not ported:
 
-- **Gin / FastHTTP middleware** — PHP uses Symfony kernel event listeners instead
-- **OpenTelemetry instrumentation** — can be added as a decorator
-- **DevServer** — mock OAuth2 server (can be ported separately)
+- **Gin / FastHTTP middleware** (including the Gin/FastHTTP `DiscoveryHandler` adapters) — PHP uses Symfony kernel event listeners and an invokable controller instead
+- **OpenTelemetry instrumentation** (middleware, validator, introspector, cache, token provider and discovery decorators, HTTP transport) — can be added as a decorator
+- **DevServer** — mock OAuth2 server, including its JWT/JWKS/discovery modes (can be ported separately)
 - **Goroutine-based background refresh** — PHP handles this with lazy refresh on access
+- **SIGHUP manifest reload** (`WithReloadOnSignal`) — call `DiscoveryHandler::reload()` explicitly instead
+- **Shared `DegradationMonitor`** from go-redis — `FallbackCache` uses a per-instance cooldown instead
+
+Intentional differences:
+
+- `ScopeChecker::hasScope()` / `RequireScopeMiddleware::single()` are wildcard-aware by default; use the `*Exact` variants for Go's exact-match `HasScope` semantics
+- `IntrospectionResponse::toClaims()` rejects an empty `client_id` (Go's `ClaimsFromIntrospection` does not), consistent with `JwksValidator`
+- `ScopeChecker::hasAllScopes()` has no Go counterpart
