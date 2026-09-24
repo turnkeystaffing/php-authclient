@@ -45,10 +45,11 @@ class PrefixedClient implements RedisClientInterface
         $prefixed = $this->prefixKey($key);
 
         // Support both Predis (setex) and phpredis (\Redis::setex)
-        if (method_exists($this->client, 'setex')) {
-            $this->client->setex($prefixed, $ttlSeconds, $value);
-        } else {
+        if ($this->client instanceof \Redis) {
             $this->client->set($prefixed, $value, ['EX' => $ttlSeconds]);
+        } else {
+            // Predis\ClientInterface and anything else that has SETEX (magic or real)
+            $this->client->setex($prefixed, $ttlSeconds, $value);
         }
     }
 
