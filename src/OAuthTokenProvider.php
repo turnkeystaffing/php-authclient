@@ -30,8 +30,34 @@ class OAuthTokenProvider implements TokenProviderInterface
         private readonly ?CacheInterface $cache = null,
         private readonly string $cacheKeyNamespace = 'token_provider:',
     ) {
-        if (!str_starts_with($tokenEndpoint, 'https://')) {
-            $this->logger->warning('Token endpoint is not HTTPS', ['endpoint' => $tokenEndpoint]);
+        if ($clientId === '') {
+            throw new \InvalidArgumentException('authclient: token provider: client ID is required');
+        }
+        if ($clientSecret === '') {
+            throw new \InvalidArgumentException('authclient: token provider: client secret is required');
+        }
+        if ($tokenEndpoint === '') {
+            throw new \InvalidArgumentException('authclient: token provider: token URL is required');
+        }
+        $parsed = parse_url($tokenEndpoint);
+        if ($parsed === false) {
+            throw new \InvalidArgumentException('authclient: token provider: invalid token URL');
+        }
+        $scheme = strtolower($parsed['scheme'] ?? '');
+        if ($scheme !== 'http' && $scheme !== 'https') {
+            throw new \InvalidArgumentException(
+                sprintf('authclient: token provider: token URL scheme must be http or https, got "%s"', $scheme),
+            );
+        }
+        if (($parsed['host'] ?? '') === '') {
+            throw new \InvalidArgumentException('authclient: token provider: token URL must include a host');
+        }
+
+        if ($scheme === 'http') {
+            $this->logger->warning(
+                'authclient: token provider: token URL uses plaintext HTTP — credentials will be transmitted without TLS',
+                ['token_url' => UrlSanitizer::sanitize($tokenEndpoint)],
+            );
         }
 
         // Derive a unique cache key from client identity + requested scopes
@@ -147,16 +173,18 @@ class OAuthTokenProvider implements TokenProviderInterface
                 'headers' => [
                     'Authorization' => 'Basic ' . base64_encode("{$encodedId}:{$encodedSecret}"),
                     'Content-Type' => 'application/x-www-form-urlencoded',
+                    'Accept' => 'application/json',
                 ],
                 'body' => http_build_query($body),
             ]);
 
+            // Do NOT echo the response body — include only the status code
             $statusCode = $response->getStatusCode();
-            if ($statusCode < 200 || $statusCode >= 300) {
-                throw new \RuntimeException("token endpoint returned HTTP {$statusCode}");
+            if ($statusCode !== 200) {
+                throw new \RuntimeException("token request failed with status {$statusCode}");
             }
 
-            $content = $response->getContent();
+            $content = $response->getContent(false);
             if (strlen($content) > self::MAX_RESPONSE_BODY) {
                 throw new \RuntimeException('response body exceeds maximum size');
             }
@@ -169,12 +197,22 @@ class OAuthTokenProvider implements TokenProviderInterface
             );
         }
 
-        $accessToken = $data['access_token'] ?? '';
-        $tokenType = $data['token_type'] ?? '';
-        $expiresIn = (int) ($data['expires_in'] ?? 0);
+        if (!is_array($data)) {
+            throw AuthClientError::tokenInvalid('invalid token response format');
+        }
 
+        $accessToken = is_string($data['access_token'] ?? null) ? $data['access_token'] : '';
+        $tokenType = is_string($data['token_type'] ?? null) ? $data['token_type'] : '';
+        $expiresIn = (int) ($data['expires_in'] ?? 0);
+        $grantedScope = is_string($data['scope'] ?? null) ? $data['scope'] : '';
+
+        if ($accessToken === '') {
+            throw AuthClientError::tokenInvalid('empty access_token in response');
+        }
+
+        // Do NOT echo the server-provided token_type — it is response body data
         if (strcasecmp($tokenType, 'Bearer') !== 0) {
-            throw AuthClientError::tokenInvalid("unexpected token_type: {$tokenType}");
+            throw AuthClientError::tokenInvalid('unsupported token_type, expected Bearer');
         }
 
         if ($expiresIn <= 0) {
@@ -191,11 +229,30 @@ class OAuthTokenProvider implements TokenProviderInterface
             $this->logger->warning('Token lifetime exceeds 24 hours', ['expires_in' => $expiresIn]);
         }
 
+        // Scopes are unordered sets per RFC 6749 Section 3.3
+        $requestedScope = implode(' ', $this->scopes);
+        if ($requestedScope !== '' && $grantedScope !== '' && !self::scopeSetsEqual($requestedScope, $grantedScope)) {
+            $this->logger->warning('Granted scope differs from requested', [
+                'requested' => $requestedScope,
+                'granted' => $grantedScope,
+            ]);
+        }
+
         $now = microtime(true);
         $this->cachedToken = $accessToken;
         $this->tokenExpiresAt = $now + $expiresIn;
         $this->refreshAt = $now + ($expiresIn * self::REFRESH_THRESHOLD);
 
         $this->saveToCache($accessToken, $now, $this->tokenExpiresAt);
+    }
+
+    private static function scopeSetsEqual(string $a, string $b): bool
+    {
+        $as = preg_split('/\s+/', trim($a), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $bs = preg_split('/\s+/', trim($b), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        sort($as);
+        sort($bs);
+
+        return $as === $bs;
     }
 }
