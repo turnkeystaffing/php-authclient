@@ -38,6 +38,34 @@ class IntrospectionResponseTest extends TestCase
         $this->assertSame(1699999000, $response->iat);
         $this->assertSame('authorization_code', $response->grantType);
         $this->assertSame(1699998000, $response->authTime);
+        $this->assertSame(['api'], $response->aud);
+    }
+
+    public function testFromArrayAudArray(): void
+    {
+        $response = IntrospectionResponse::fromArray([
+            'active' => true,
+            'client_id' => 'c1',
+            'aud' => ['api', '', 42, 'admin-api'],
+        ]);
+
+        $this->assertSame(['api', 'admin-api'], $response->aud);
+        $this->assertSame(['api', 'admin-api'], $response->toClaims()->audience);
+    }
+
+    public function testFromArrayMissingAudIsEmptyList(): void
+    {
+        $response = IntrospectionResponse::fromArray(['active' => true, 'client_id' => 'c1']);
+
+        $this->assertSame([], $response->aud);
+        $this->assertSame([], $response->toClaims()->audience);
+    }
+
+    public function testAudRoundTripsThroughJson(): void
+    {
+        $response = IntrospectionResponse::fromArray(['active' => true, 'aud' => ['a', 'b']]);
+        $decoded = json_decode(json_encode($response), true);
+        $this->assertSame(['a', 'b'], IntrospectionResponse::fromArray($decoded)->aud);
     }
 
     public function testFromArrayInactive(): void

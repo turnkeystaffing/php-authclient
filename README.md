@@ -735,6 +735,8 @@ Changes introduced while syncing with go-authclient (up to `6a0ce9b`) that can a
   uses `introspect:`-prefixed cache keys (existing cache entries are simply re-fetched). The JWKS
   fallback now applies in `validateToken()` only; `introspect()` throws on network errors.
   `IntrospectionResponse::toClaims()` fills `userId` (from `sub`) and `email`.
+- **`IntrospectionResponse::$aud` is now `list<string>`** (was `?string`). RFC 7662 allows `aud` as a
+  string or an array; both are normalized to a list (previously an array `aud` threw a `TypeError`).
 - **FallbackCache** writes to both caches on `set()` and deletes from both on `delete()`.
 
 ## Ported From
@@ -754,3 +756,4 @@ Intentional differences:
 - `ScopeChecker::hasScope()` / `RequireScopeMiddleware::single()` are wildcard-aware by default; use the `*Exact` variants for Go's exact-match `HasScope` semantics
 - `IntrospectionResponse::toClaims()` rejects an empty `client_id` (Go's `ClaimsFromIntrospection` does not), consistent with `JwksValidator`
 - `ScopeChecker::hasAllScopes()` has no Go counterpart
+- `IntrospectionResponse` also maps `aud`, `iss`, `iat`, `nbf`, `token_type`, `gty` and `auth_time` (Go's struct ignores them); `aud` is exposed as a list and passed to `Claims::$audience`
