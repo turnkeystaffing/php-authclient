@@ -10,19 +10,23 @@ final class ScopeChecker
      * Check if claims contain a scope matching the required scope.
      * Supports wildcard matching in user scopes (e.g. user has "admin:*", required "admin:read" → true).
      * Wildcards only apply in the user's direction — a specific user scope never satisfies a wildcard requirement.
+     *
+     * Both the required scope and user scopes are validated against the auth service's naming
+     * rules (ScopeValidator::isValidScope). Invalid scopes are silently skipped — a token containing
+     * malformed scopes like "BOGUS:::thing" or "a:b:c:d" will not match anything.
      */
     public static function hasScope(?Claims $claims, string $scope): bool
     {
-        if ($claims === null || $scope === '') {
+        if ($claims === null || !ScopeValidator::isValidScope($scope)) {
             return false;
         }
 
         foreach ($claims->scopes as $userScope) {
-            if ($userScope === $scope) {
-                return true;
+            if (!is_string($userScope) || !ScopeValidator::isValidScope($userScope)) {
+                continue;
             }
 
-            if (str_contains($userScope, '*') && self::matchesPattern($userScope, $scope)) {
+            if (self::matchesPattern($userScope, $scope)) {
                 return true;
             }
         }
@@ -31,7 +35,41 @@ final class ScopeChecker
     }
 
     /**
-     * Check if claims contain any of the required scopes.
+     * Alias of hasScope() for naming parity with go-authclient's HasScopeWildcard.
+     */
+    public static function hasScopeWildcard(?Claims $claims, string $scope): bool
+    {
+        return self::hasScope($claims, $scope);
+    }
+
+    /**
+     * Check if claims contain the exact required scope (no wildcard matching).
+     * Equivalent to go-authclient's HasScope. Invalid scopes are silently skipped.
+     */
+    public static function hasScopeExact(?Claims $claims, string $scope): bool
+    {
+        if ($claims === null || !ScopeValidator::isValidScope($scope)) {
+            return false;
+        }
+
+        foreach ($claims->scopes as $userScope) {
+            if (!is_string($userScope) || !ScopeValidator::isValidScope($userScope)) {
+                continue;
+            }
+
+            if ($userScope === $scope) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if claims contain any of the required scopes (wildcard-aware).
+     * Empty and invalid required scopes are skipped.
+     *
+     * @param string[] $requiredScopes
      */
     public static function hasAnyScope(?Claims $claims, array $requiredScopes): bool
     {
@@ -40,7 +78,7 @@ final class ScopeChecker
         }
 
         foreach ($requiredScopes as $scope) {
-            if ($scope !== '' && self::hasScope($claims, $scope)) {
+            if (self::hasScope($claims, $scope)) {
                 return true;
             }
         }
@@ -49,7 +87,41 @@ final class ScopeChecker
     }
 
     /**
-     * Check if claims contain all of the required scopes.
+     * Alias of hasAnyScope() for naming parity with go-authclient's HasAnyScopeWildcard.
+     *
+     * @param string[] $requiredScopes
+     */
+    public static function hasAnyScopeWildcard(?Claims $claims, array $requiredScopes): bool
+    {
+        return self::hasAnyScope($claims, $requiredScopes);
+    }
+
+    /**
+     * Check if claims contain any of the required scopes using exact matching only.
+     * Equivalent to go-authclient's HasAnyScope. Empty and invalid required scopes are skipped.
+     *
+     * @param string[] $requiredScopes
+     */
+    public static function hasAnyScopeExact(?Claims $claims, array $requiredScopes): bool
+    {
+        if ($claims === null) {
+            return false;
+        }
+
+        foreach ($requiredScopes as $scope) {
+            if (self::hasScopeExact($claims, $scope)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if claims contain all of the required scopes (wildcard-aware).
+     * An empty or invalid required scope can never be satisfied.
+     *
+     * @param string[] $requiredScopes
      */
     public static function hasAllScopes(?Claims $claims, array $requiredScopes): bool
     {

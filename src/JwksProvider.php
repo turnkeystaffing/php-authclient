@@ -27,7 +27,9 @@ class JwksProvider
         $this->httpTimeoutSeconds = $httpTimeoutSeconds;
 
         if (!str_starts_with($jwksEndpoint, 'https://')) {
-            $this->logger->warning('JWKS endpoint is not HTTPS', ['endpoint' => $jwksEndpoint]);
+            $this->logger->warning('JWKS endpoint is not HTTPS — keys may be intercepted', [
+                'endpoint' => UrlSanitizer::sanitize($jwksEndpoint),
+            ]);
         }
 
         if ($failFast) {

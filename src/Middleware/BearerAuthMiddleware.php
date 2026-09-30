@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Turnkey\AuthClient\Middleware;
 
-use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
@@ -16,9 +15,13 @@ class BearerAuthMiddleware
 {
     public const CLAIMS_ATTRIBUTE = 'auth_claims';
 
-    /** @var null|callable(AuthClientError, Request): ?Response */
+    /** @var null|callable(AuthClientError, Request, int, string, string): ?Response */
     private $errorHandler;
 
+    /**
+     * @param null|callable(AuthClientError $error, Request $request, int $statusCode, string $errorCode, string $errorDescription): ?Response $errorHandler
+     *        Custom error response builder. Returning null falls back to the default RFC 6750 JSON response.
+     */
     public function __construct(
         private readonly TokenValidatorInterface $validator,
         ?callable $errorHandler = null,
@@ -33,24 +36,34 @@ class BearerAuthMiddleware
         }
 
         $request = $event->getRequest();
-        $authHeader = $request->headers->get('Authorization', '');
+        $authHeader = (string) $request->headers->get('Authorization', '');
 
-        if (!str_starts_with($authHeader, 'Bearer ')) {
-            $this->setErrorResponse($event, $request, AuthClientError::tokenMalformed('missing Bearer token'), 401);
+        if ($authHeader === '') {
+            $this->reject($event, AuthClientError::tokenMalformed('missing authorization header'), 'invalid_request', 'Missing authorization header');
             return;
         }
 
-        $token = substr($authHeader, 7);
+        if (strlen($authHeader) < 7 || strcasecmp(substr($authHeader, 0, 7), 'Bearer ') !== 0) {
+            $this->reject($event, AuthClientError::tokenMalformed('invalid authorization header format'), 'invalid_request', 'Invalid authorization header format');
+            return;
+        }
+
+        $token = trim(substr($authHeader, 7));
         if ($token === '') {
-            $this->setErrorResponse($event, $request, AuthClientError::tokenMalformed('empty Bearer token'), 401);
+            $this->reject($event, AuthClientError::tokenMalformed('empty bearer token'), 'invalid_request', 'Empty bearer token');
+            return;
+        }
+
+        if (strlen($token) > TokenValidatorInterface::MAX_BEARER_TOKEN_LENGTH) {
+            $this->reject($event, AuthClientError::tokenOversized(), 'invalid_request', 'Bearer token exceeds maximum length');
             return;
         }
 
         try {
             $claims = $this->validator->validateToken($token);
         } catch (AuthClientError $e) {
-            $statusCode = $this->httpStatusForError($e);
-            $this->setErrorResponse($event, $request, $e, $statusCode);
+            // Do not leak validator internals (expected issuer/audience, etc.) to the client
+            $this->reject($event, $e, 'invalid_token', 'Token validation failed');
             return;
         }
 
@@ -63,41 +76,18 @@ class BearerAuthMiddleware
         return $claims instanceof Claims ? $claims : null;
     }
 
-    private function setErrorResponse(RequestEvent $event, Request $request, AuthClientError $error, int $statusCode): void
+    private function reject(RequestEvent $event, AuthClientError $error, string $errorCode, string $errorDescription): void
     {
+        $statusCode = Response::HTTP_UNAUTHORIZED;
+
         if ($this->errorHandler !== null) {
-            $response = ($this->errorHandler)($error, $request);
+            $response = ($this->errorHandler)($error, $event->getRequest(), $statusCode, $errorCode, $errorDescription);
             if ($response !== null) {
                 $event->setResponse($response);
                 return;
             }
         }
 
-        // RFC 6750 error response
-        $wwwAuth = 'Bearer';
-        $errorType = match ($error->getErrorType()) {
-            AuthClientError::TOKEN_EXPIRED => 'invalid_token',
-            AuthClientError::TOKEN_NOT_YET_VALID => 'invalid_token',
-            AuthClientError::TOKEN_MALFORMED => 'invalid_request',
-            AuthClientError::TOKEN_OVERSIZED => 'invalid_request',
-            default => 'invalid_token',
-        };
-
-        $wwwAuth .= sprintf(' error="%s", error_description="%s"', $errorType, addslashes($error->getMessage()));
-
-        $event->setResponse(new JsonResponse(
-            ['error' => $errorType, 'error_description' => $error->getMessage()],
-            $statusCode,
-            ['WWW-Authenticate' => $wwwAuth],
-        ));
-    }
-
-    private function httpStatusForError(AuthClientError $error): int
-    {
-        return match ($error->getErrorType()) {
-            AuthClientError::TOKEN_MALFORMED,
-            AuthClientError::TOKEN_OVERSIZED => 400,
-            default => 401,
-        };
+        $event->setResponse(ErrorResponder::respond($statusCode, $errorCode, $errorDescription));
     }
 }

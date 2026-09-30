@@ -20,8 +20,55 @@ class FallbackCacheTest extends TestCase
         $cache->set('k', 'v', 60);
 
         $this->assertSame('v', $primary->get('k'));
-        $this->assertNull($fallback->get('k'));
+        $this->assertSame('v', $fallback->get('k'), 'fallback is dual-written to stay warm');
         $this->assertSame('v', $cache->get('k'));
+    }
+
+    public function testFallbackIsWarmAfterPrimaryGoesDown(): void
+    {
+        $primary = new ToggleCache();
+        $fallback = new InMemoryCache();
+        $cache = new FallbackCache($primary, $fallback);
+
+        $cache->set('k', 'v', 60);
+        $primary->failing = true;
+
+        $this->assertSame('v', $cache->get('k'));
+    }
+
+    public function testDeleteClearsBothCaches(): void
+    {
+        $primary = new InMemoryCache();
+        $fallback = new InMemoryCache();
+        $cache = new FallbackCache($primary, $fallback);
+
+        $cache->set('k', 'v', 60);
+        $cache->delete('k');
+
+        $this->assertNull($primary->get('k'));
+        $this->assertNull($fallback->get('k'));
+    }
+
+    public function testFallbackFailureDoesNotBreakPrimaryWrite(): void
+    {
+        $primary = new InMemoryCache();
+        $cache = new FallbackCache($primary, new FailingCache());
+
+        $cache->set('k', 'v', 60);
+        $cache->delete('other');
+
+        $this->assertSame('v', $primary->get('k'));
+    }
+
+    public function testLogsWarningWhenPrimaryFails(): void
+    {
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->expects($this->once())->method('warning')
+            ->with($this->stringContains('primary get failed'), $this->arrayHasKey('error'));
+
+        $cache = new FallbackCache(new FailingCache(), new InMemoryCache(), logger: $logger);
+        $cache->get('k');
+        $cache->get('k'); // cooldown: primary skipped, no second warning
     }
 
     public function testFallsBackOnPrimaryGetFailure(): void
@@ -176,5 +223,19 @@ class TogglableCache implements CacheInterface
             throw new \RuntimeException('Redis unavailable');
         }
         unset($this->store[$key]);
+    }
+}
+
+class ToggleCache extends InMemoryCache
+{
+    public bool $failing = false;
+
+    public function get(string $key): mixed
+    {
+        if ($this->failing) {
+            throw new \RuntimeException('down');
+        }
+
+        return parent::get($key);
     }
 }

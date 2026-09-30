@@ -10,28 +10,36 @@ use Psr\Log\LoggerInterface;
 
 class JwksValidator implements TokenValidatorInterface
 {
-    private const MAX_TOKEN_LENGTH = 4096;
     private const ALLOWED_ALGORITHMS = ['RS256', 'RS384', 'RS512'];
 
+    /** @var string[] */
+    private readonly array $audience;
+
     /**
-     * @param string $audience Required audience claim. Tokens without a matching audience are rejected.
+     * @param string|string[] $audience Accepted audience(s). The token's aud claim must contain at least one of them.
      */
     public function __construct(
         private readonly JwksProvider $jwksProvider,
         private readonly string $issuer,
-        private readonly string $audience,
+        string|array $audience,
         private readonly LoggerInterface $logger,
     ) {
-        if ($audience === '') {
+        if ($issuer === '') {
+            throw new \InvalidArgumentException('authclient: issuer is required');
+        }
+
+        $audience = array_values(array_filter((array) $audience, fn($a) => $a !== ''));
+        if ($audience === []) {
             throw new \InvalidArgumentException('authclient: audience is required');
         }
+        $this->audience = $audience;
     }
 
     public function validateToken(string $token): Claims
     {
-        if (strlen($token) > self::MAX_TOKEN_LENGTH) {
+        if (strlen($token) > self::MAX_BEARER_TOKEN_LENGTH) {
             throw AuthClientError::tokenOversized(
-                sprintf('token length %d exceeds maximum %d', strlen($token), self::MAX_TOKEN_LENGTH)
+                sprintf('token length %d exceeds maximum %d', strlen($token), self::MAX_BEARER_TOKEN_LENGTH)
             );
         }
 
@@ -77,6 +85,11 @@ class JwksValidator implements TokenValidatorInterface
             throw AuthClientError::tokenInvalid($e->getMessage(), $e);
         }
 
+        // Expiration is mandatory (go-authclient: jwt.WithExpirationRequired)
+        if (!isset($payload->exp)) {
+            throw AuthClientError::tokenInvalid('token is missing required exp claim');
+        }
+
         // Verify issuer
         $tokenIssuer = $payload->iss ?? '';
         if ($tokenIssuer !== $this->issuer) {
@@ -87,9 +100,9 @@ class JwksValidator implements TokenValidatorInterface
 
         // Verify audience
         $tokenAud = isset($payload->aud) ? (array) $payload->aud : [];
-        if (!in_array($this->audience, $tokenAud, true)) {
+        if (array_intersect($this->audience, $tokenAud) === []) {
             throw AuthClientError::tokenInvalid(
-                sprintf('invalid audience: token does not contain required audience "%s"', $this->audience)
+                sprintf('invalid audience: token does not contain any of the required audiences "%s"', implode('", "', $this->audience))
             );
         }
 

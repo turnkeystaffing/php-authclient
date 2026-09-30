@@ -18,13 +18,14 @@ namespace Turnkey\AuthClient;
  */
 final class ScopeValidator
 {
-    private const MAX_NAME_LENGTH = 255;
+    public const MAX_NAME_LENGTH = 255;
 
     /**
      * Matches 2-3 segment scope names: first segment [a-z0-9_]+, followed by 1-2 segments
      * that may include wildcard (*).
+     * CONTRACT: Must match get-native-auth's scopeNamePattern (shared with ScopeChecker and ManifestValidator).
      */
-    private const NAME_PATTERN = '/^[a-z0-9_]+(?::[a-z0-9_*]+){1,2}$/';
+    public const NAME_PATTERN = '/^[a-z0-9_]+(?::[a-z0-9_*]+){1,2}$/';
 
     private const OIDC_STANDARD_SCOPES = [
         'openid' => true,
@@ -157,6 +158,47 @@ final class ScopeValidator
                 );
             }
         }
+    }
+
+    /**
+     * Check if a scope name conforms to the auth service's naming rules without throwing.
+     * Used by ScopeChecker to silently skip malformed scopes from token claims.
+     *
+     * Same rules as validateName(): OIDC standard scopes, universal wildcards (*:*, *),
+     * or 2-3 lowercase segments with wildcards only as the entire final segment.
+     */
+    public static function isValidScope(string $name): bool
+    {
+        if ($name === '' || strlen($name) > self::MAX_NAME_LENGTH) {
+            return false;
+        }
+        if ($name !== strtolower($name)) {
+            return false;
+        }
+        if (isset(self::OIDC_STANDARD_SCOPES[$name])) {
+            return true;
+        }
+        if ($name === '*:*' || $name === '*') {
+            return true;
+        }
+        if (!preg_match(self::NAME_PATTERN, $name)) {
+            return false;
+        }
+        if (str_contains($name, '*')) {
+            $segments = explode(':', $name);
+            foreach (array_slice($segments, 1) as $seg) {
+                if ($seg !== '*' && str_contains($seg, '*')) {
+                    return false;
+                }
+            }
+            foreach (array_slice($segments, 1, -1) as $seg) {
+                if ($seg === '*') {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     /**

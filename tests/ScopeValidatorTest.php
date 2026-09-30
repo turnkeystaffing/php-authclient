@@ -142,4 +142,45 @@ class ScopeValidatorTest extends TestCase
         $this->assertTrue(ScopeValidator::containsWildcard('*:*'));
         $this->assertFalse(ScopeValidator::containsWildcard('admin:read'));
     }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('isValidScopeProvider')]
+    public function testIsValidScope(string $name, bool $expected): void
+    {
+        $this->assertSame($expected, ScopeValidator::isValidScope($name));
+    }
+
+    public static function isValidScopeProvider(): iterable
+    {
+        yield 'oidc openid' => ['openid', true];
+        yield 'oidc offline_access' => ['offline_access', true];
+        yield '2-seg' => ['expenses:approve', true];
+        yield '3-seg' => ['bgc:contractors:read', true];
+        yield 'final wildcard 2-seg' => ['bgc:*', true];
+        yield 'final wildcard 3-seg' => ['bgc:contractors:*', true];
+        yield 'universal *:*' => ['*:*', true];
+        yield 'universal *' => ['*', true];
+        yield 'empty' => ['', false];
+        yield 'too long' => ['a:' . str_repeat('b', 255), false];
+        yield 'uppercase' => ['Admin:read', false];
+        yield 'single segment' => ['admin', false];
+        yield '4 segments' => ['a:b:c:d', false];
+        yield 'triple colon' => ['bogus:::thing', false];
+        yield 'trailing colon' => ['admin:', false];
+        yield 'non-final wildcard' => ['bgc:*:read', false];
+        yield 'embedded wildcard' => ['svc:app*rove', false];
+        yield 'wildcard first segment' => ['*:read', false];
+        yield 'special chars' => ['svc:data-read', false];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('isValidScopeProvider')]
+    public function testIsValidScopeAgreesWithValidateName(string $name, bool $expected): void
+    {
+        try {
+            ScopeValidator::validateName($name);
+            $valid = true;
+        } catch (\InvalidArgumentException) {
+            $valid = false;
+        }
+        $this->assertSame($expected, $valid);
+    }
 }

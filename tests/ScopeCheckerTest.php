@@ -15,31 +15,31 @@ class ScopeCheckerTest extends TestCase
 
     public function testHasScopeMatch(): void
     {
-        $claims = new Claims(clientId: 'c1', scopes: ['read', 'write', 'admin']);
-        $this->assertTrue(ScopeChecker::hasScope($claims, 'admin'));
+        $claims = new Claims(clientId: 'c1', scopes: ['svc:data:read', 'svc:data:write', 'svc:admin:all']);
+        $this->assertTrue(ScopeChecker::hasScope($claims, 'svc:admin:all'));
     }
 
     public function testHasScopeNoMatch(): void
     {
-        $claims = new Claims(clientId: 'c1', scopes: ['read']);
-        $this->assertFalse(ScopeChecker::hasScope($claims, 'admin'));
+        $claims = new Claims(clientId: 'c1', scopes: ['svc:data:read']);
+        $this->assertFalse(ScopeChecker::hasScope($claims, 'svc:admin:all'));
     }
 
     public function testHasScopeNullClaims(): void
     {
-        $this->assertFalse(ScopeChecker::hasScope(null, 'read'));
+        $this->assertFalse(ScopeChecker::hasScope(null, 'svc:data:read'));
     }
 
     public function testHasScopeEmptyScope(): void
     {
-        $claims = new Claims(clientId: 'c1', scopes: ['read']);
+        $claims = new Claims(clientId: 'c1', scopes: ['svc:data:read']);
         $this->assertFalse(ScopeChecker::hasScope($claims, ''));
     }
 
     public function testHasScopeCaseSensitive(): void
     {
-        $claims = new Claims(clientId: 'c1', scopes: ['Read']);
-        $this->assertFalse(ScopeChecker::hasScope($claims, 'read'));
+        $claims = new Claims(clientId: 'c1', scopes: ['Svc:data:read']);
+        $this->assertFalse(ScopeChecker::hasScope($claims, 'svc:data:read'));
     }
 
     // --- hasScope: wildcard matching ---
@@ -78,7 +78,7 @@ class ScopeCheckerTest extends TestCase
     public function testHasScopeStarWildcard(): void
     {
         $claims = new Claims(clientId: 'c1', scopes: ['*']);
-        $this->assertTrue(ScopeChecker::hasScope($claims, 'anything'));
+        $this->assertTrue(ScopeChecker::hasScope($claims, 'svc:anything'));
         $this->assertTrue(ScopeChecker::hasScope($claims, 'admin:read'));
     }
 
@@ -93,30 +93,30 @@ class ScopeCheckerTest extends TestCase
 
     public function testHasAnyScopeMatch(): void
     {
-        $claims = new Claims(clientId: 'c1', scopes: ['write']);
-        $this->assertTrue(ScopeChecker::hasAnyScope($claims, ['read', 'write']));
+        $claims = new Claims(clientId: 'c1', scopes: ['svc:data:write']);
+        $this->assertTrue(ScopeChecker::hasAnyScope($claims, ['svc:data:read', 'svc:data:write']));
     }
 
     public function testHasAnyScopeNoMatch(): void
     {
-        $claims = new Claims(clientId: 'c1', scopes: ['delete']);
-        $this->assertFalse(ScopeChecker::hasAnyScope($claims, ['read', 'write']));
+        $claims = new Claims(clientId: 'c1', scopes: ['svc:data:delete']);
+        $this->assertFalse(ScopeChecker::hasAnyScope($claims, ['svc:data:read', 'svc:data:write']));
     }
 
     public function testHasAnyScopeNullClaims(): void
     {
-        $this->assertFalse(ScopeChecker::hasAnyScope(null, ['read']));
+        $this->assertFalse(ScopeChecker::hasAnyScope(null, ['svc:data:read']));
     }
 
     public function testHasAnyScopeSkipsEmptyStrings(): void
     {
-        $claims = new Claims(clientId: 'c1', scopes: ['read']);
-        $this->assertTrue(ScopeChecker::hasAnyScope($claims, ['', 'read']));
+        $claims = new Claims(clientId: 'c1', scopes: ['svc:data:read']);
+        $this->assertTrue(ScopeChecker::hasAnyScope($claims, ['', 'svc:data:read']));
     }
 
     public function testHasAnyScopeAllEmpty(): void
     {
-        $claims = new Claims(clientId: 'c1', scopes: ['read']);
+        $claims = new Claims(clientId: 'c1', scopes: ['svc:data:read']);
         $this->assertFalse(ScopeChecker::hasAnyScope($claims, ['', '']));
     }
 
@@ -130,19 +130,19 @@ class ScopeCheckerTest extends TestCase
 
     public function testHasAllScopesGranted(): void
     {
-        $claims = new Claims(clientId: 'c1', scopes: ['read', 'write', 'admin']);
-        $this->assertTrue(ScopeChecker::hasAllScopes($claims, ['read', 'write']));
+        $claims = new Claims(clientId: 'c1', scopes: ['svc:data:read', 'svc:data:write', 'svc:admin:all']);
+        $this->assertTrue(ScopeChecker::hasAllScopes($claims, ['svc:data:read', 'svc:data:write']));
     }
 
     public function testHasAllScopesMissing(): void
     {
-        $claims = new Claims(clientId: 'c1', scopes: ['read']);
-        $this->assertFalse(ScopeChecker::hasAllScopes($claims, ['read', 'write']));
+        $claims = new Claims(clientId: 'c1', scopes: ['svc:data:read']);
+        $this->assertFalse(ScopeChecker::hasAllScopes($claims, ['svc:data:read', 'svc:data:write']));
     }
 
     public function testHasAllScopesNullClaims(): void
     {
-        $this->assertFalse(ScopeChecker::hasAllScopes(null, ['read']));
+        $this->assertFalse(ScopeChecker::hasAllScopes(null, ['svc:data:read']));
     }
 
     public function testHasAllScopesWithWildcard(): void
@@ -150,6 +150,76 @@ class ScopeCheckerTest extends TestCase
         $claims = new Claims(clientId: 'c1', scopes: ['admin:*']);
         $this->assertTrue(ScopeChecker::hasAllScopes($claims, ['admin:read', 'admin:write']));
         $this->assertFalse(ScopeChecker::hasAllScopes($claims, ['admin:read', 'other:write']));
+    }
+
+    // --- scope name validation (go-authclient 6a0ce9b parity) ---
+
+    #[DataProvider('invalidUserScopeProvider')]
+    public function testHasScopeSkipsInvalidUserScopes(string $userScope, string $required): void
+    {
+        $claims = new Claims(clientId: 'c1', scopes: [$userScope]);
+        $this->assertFalse(ScopeChecker::hasScope($claims, $required));
+        $this->assertFalse(ScopeChecker::hasScopeExact($claims, $required));
+    }
+
+    public static function invalidUserScopeProvider(): iterable
+    {
+        yield 'malformed colons' => ['BOGUS:::thing', 'BOGUS:::thing'];
+        yield 'four segments' => ['a:b:c:d', 'a:b:c:d'];
+        yield 'uppercase' => ['Svc:Data:Read', 'Svc:Data:Read'];
+        yield 'single segment' => ['read', 'read'];
+        yield 'non-final wildcard' => ['bgc:*:read', 'bgc:contractors:read'];
+        yield 'embedded wildcard' => ['svc:app*', 'svc:approve'];
+    }
+
+    public function testHasScopeRejectsInvalidRequiredScope(): void
+    {
+        $claims = new Claims(clientId: 'c1', scopes: ['*']);
+        $this->assertFalse(ScopeChecker::hasScope($claims, 'a:b:c:d'));
+        $this->assertFalse(ScopeChecker::hasScope($claims, 'UPPER:case'));
+        $this->assertFalse(ScopeChecker::hasAllScopes($claims, ['svc:data:read', 'bad']));
+    }
+
+    public function testHasScopeValidAmongInvalid(): void
+    {
+        $claims = new Claims(clientId: 'c1', scopes: ['BOGUS:::thing', 'svc:data:read']);
+        $this->assertTrue(ScopeChecker::hasScope($claims, 'svc:data:read'));
+    }
+
+    public function testHasScopeOidcStandardScope(): void
+    {
+        $claims = new Claims(clientId: 'c1', scopes: ['openid', 'profile']);
+        $this->assertTrue(ScopeChecker::hasScope($claims, 'openid'));
+        $this->assertTrue(ScopeChecker::hasScopeExact($claims, 'profile'));
+        $this->assertFalse(ScopeChecker::hasScope($claims, 'email'));
+    }
+
+    // --- exact variants ---
+
+    public function testHasScopeExactIgnoresWildcards(): void
+    {
+        $claims = new Claims(clientId: 'c1', scopes: ['svc:data:*', '*:*']);
+        $this->assertFalse(ScopeChecker::hasScopeExact($claims, 'svc:data:read'));
+        $this->assertTrue(ScopeChecker::hasScopeExact($claims, 'svc:data:*'));
+    }
+
+    public function testHasAnyScopeExact(): void
+    {
+        $claims = new Claims(clientId: 'c1', scopes: ['svc:data:*', 'svc:data:write']);
+        $this->assertTrue(ScopeChecker::hasAnyScopeExact($claims, ['svc:data:read', 'svc:data:write']));
+        $this->assertFalse(ScopeChecker::hasAnyScopeExact($claims, ['svc:data:read']));
+        $this->assertFalse(ScopeChecker::hasAnyScopeExact(null, ['svc:data:write']));
+        $this->assertFalse(ScopeChecker::hasAnyScopeExact($claims, ['', 'bad']));
+    }
+
+    // --- wildcard aliases ---
+
+    public function testWildcardAliases(): void
+    {
+        $claims = new Claims(clientId: 'c1', scopes: ['bgc:*']);
+        $this->assertTrue(ScopeChecker::hasScopeWildcard($claims, 'bgc:contractors:read'));
+        $this->assertTrue(ScopeChecker::hasAnyScopeWildcard($claims, ['other:read', 'bgc:contractors:read']));
+        $this->assertFalse(ScopeChecker::hasAnyScopeWildcard($claims, ['other:read']));
     }
 
     // --- matchesPattern ---

@@ -15,11 +15,13 @@ class IntrospectionResponse implements \JsonSerializable
         public readonly ?int $iat = null,
         public readonly ?int $nbf = null,
         public readonly ?string $sub = null,
-        public readonly ?string $aud = null,
+        /** @var list<string> RFC 7662 allows a string or an array; always normalized to a list. */
+        public readonly array $aud = [],
         public readonly ?string $iss = null,
         public readonly ?string $scope = null,
         public readonly ?string $grantType = null,
         public readonly ?int $authTime = null,
+        public readonly ?string $email = null,
     ) {
     }
 
@@ -34,12 +36,28 @@ class IntrospectionResponse implements \JsonSerializable
             iat: isset($data['iat']) ? (int) $data['iat'] : null,
             nbf: isset($data['nbf']) ? (int) $data['nbf'] : null,
             sub: $data['sub'] ?? null,
-            aud: $data['aud'] ?? null,
+            aud: self::normalizeAud($data['aud'] ?? null),
             iss: $data['iss'] ?? null,
             scope: $data['scope'] ?? null,
             grantType: $data['gty'] ?? null,
             authTime: isset($data['auth_time']) ? (int) $data['auth_time'] : null,
+            email: $data['email'] ?? null,
         );
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function normalizeAud(mixed $aud): array
+    {
+        if (is_string($aud)) {
+            return $aud !== '' ? [$aud] : [];
+        }
+        if (is_array($aud)) {
+            return array_values(array_filter($aud, fn($a) => is_string($a) && $a !== ''));
+        }
+
+        return [];
     }
 
     public function jsonSerialize(): array
@@ -58,9 +76,16 @@ class IntrospectionResponse implements \JsonSerializable
             'scope' => $this->scope,
             'gty' => $this->grantType,
             'auth_time' => $this->authTime,
+            'email' => $this->email,
         ];
     }
 
+    /**
+     * Convert to Claims. Unlike go-authclient's ClaimsFromIntrospection, an empty
+     * client_id is rejected (consistent with JwksValidator).
+     *
+     * Security: email and username are passed through unsanitized — see Claims.
+     */
     public function toClaims(): Claims
     {
         if (!$this->active) {
@@ -77,10 +102,12 @@ class IntrospectionResponse implements \JsonSerializable
         return new Claims(
             clientId: $clientId,
             scopes: array_values(array_filter($scopes, fn($s) => $s !== '')),
+            userId: $this->sub,
+            email: $this->email,
             username: $this->username,
             expiresAt: $this->exp !== null ? new \DateTimeImmutable('@' . $this->exp) : null,
             subject: $this->sub,
-            audience: $this->aud !== null ? [$this->aud] : [],
+            audience: $this->aud,
             issuedAt: $this->iat !== null ? new \DateTimeImmutable('@' . $this->iat) : null,
             notBefore: $this->nbf !== null ? new \DateTimeImmutable('@' . $this->nbf) : null,
             grantType: $this->grantType,

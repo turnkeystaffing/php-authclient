@@ -346,6 +346,114 @@ class OAuthTokenProviderTest extends TestCase
         $this->assertSame(0, $callCount);
     }
 
+    // --- go-authclient parity ---
+
+    private function provider(HttpClientInterface $httpClient, array $scopes = [], ?\Psr\Log\LoggerInterface $logger = null): OAuthTokenProvider
+    {
+        return new OAuthTokenProvider(
+            tokenEndpoint: 'https://auth.example.com/token',
+            clientId: 'client1',
+            clientSecret: 'secret1',
+            httpClient: $httpClient,
+            logger: $logger ?? $this->logger,
+            scopes: $scopes,
+        );
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidConfigProvider')]
+    public function testInvalidConfigRejected(string $endpoint, string $clientId, string $secret, string $message): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage($message);
+        new OAuthTokenProvider($endpoint, $clientId, $secret, $this->mockHttpClient('{}'), $this->logger);
+    }
+
+    public static function invalidConfigProvider(): iterable
+    {
+        yield 'empty client id' => ['https://a.com/token', '', 's', 'client ID is required'];
+        yield 'empty secret' => ['https://a.com/token', 'c', '', 'client secret is required'];
+        yield 'empty url' => ['', 'c', 's', 'token URL is required'];
+        yield 'bad scheme' => ['ftp://a.com/token', 'c', 's', 'scheme must be http or https'];
+        yield 'no host' => ['https:/token', 'c', 's', 'must include a host'];
+        yield 'unparseable' => ['https:///token', 'c', 's', 'invalid token URL'];
+    }
+
+    public function testPlaintextHttpWarnsWithSanitizedUrl(): void
+    {
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->expects($this->once())->method('warning')->with(
+            $this->stringContains('plaintext HTTP'),
+            ['token_url' => 'http://auth.local:8080/token'],
+        );
+        new OAuthTokenProvider('http://user:pw@auth.local:8080/token?x=1#f', 'c', 's', $this->mockHttpClient('{}'), $logger);
+    }
+
+    public function testEmptyAccessTokenRejected(): void
+    {
+        $this->expectException(AuthClientError::class);
+        $this->expectExceptionMessage('empty access_token');
+        $this->provider($this->mockHttpClient('{"access_token":"","token_type":"Bearer","expires_in":60}'))->getToken();
+    }
+
+    public function testNon200StatusRejected(): void
+    {
+        $this->expectException(AuthClientError::class);
+        $this->expectExceptionMessage('status 201');
+        $this->provider($this->mockHttpClient('{"access_token":"t","token_type":"Bearer","expires_in":60}', 201))->getToken();
+    }
+
+    public function testTokenTypeNotEchoed(): void
+    {
+        try {
+            $this->provider($this->mockHttpClient('{"access_token":"t","token_type":"<script>","expires_in":60}'))->getToken();
+            $this->fail('expected AuthClientError');
+        } catch (AuthClientError $e) {
+            $this->assertStringNotContainsString('<script>', $e->getMessage());
+            $this->assertStringContainsString('expected Bearer', $e->getMessage());
+        }
+    }
+
+    public function testSendsAcceptHeader(): void
+    {
+        $response = $this->createStub(ResponseInterface::class);
+        $response->method('getStatusCode')->willReturn(200);
+        $response->method('getContent')->willReturn('{"access_token":"t","token_type":"Bearer","expires_in":60}');
+
+        $httpClient = $this->createMock(HttpClientInterface::class);
+        $httpClient->expects($this->once())->method('request')->with(
+            'POST',
+            'https://auth.example.com/token',
+            $this->callback(fn(array $o) => ($o['headers']['Accept'] ?? null) === 'application/json'),
+        )->willReturn($response);
+
+        $this->provider($httpClient)->getToken();
+    }
+
+    public function testGrantedScopeMismatchWarns(): void
+    {
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->expects($this->once())->method('warning')
+            ->with($this->stringContains('Granted scope differs'), $this->anything());
+
+        $this->provider(
+            $this->mockHttpClient('{"access_token":"t","token_type":"Bearer","expires_in":60,"scope":"a:read"}'),
+            ['a:read', 'a:write'],
+            $logger,
+        )->getToken();
+    }
+
+    public function testGrantedScopeSameSetDifferentOrderDoesNotWarn(): void
+    {
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->expects($this->never())->method('warning');
+
+        $this->provider(
+            $this->mockHttpClient('{"access_token":"t","token_type":"Bearer","expires_in":60,"scope":"a:write a:read"}'),
+            ['a:read', 'a:write'],
+            $logger,
+        )->getToken();
+    }
+
     // --- Helpers ---
 
     private function mockHttpClient(string $responseBody, int $statusCode = 200, int &$callCount = null): HttpClientInterface
